@@ -1,0 +1,17 @@
+{
+  "name": "BOM原価集計",
+  "short_name": "BOM原価",
+  "description": "製造業向けBOMベースのコスト集計システム",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1117",
+  "theme_color": "#3b82f6",
+  "orientation": "any",
+  "icons": [
+    {"src":"icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},
+    {"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},
+    {"src":"icon-192.png","sizes":"192x192","type":"image/png","purpose":"maskable"},
+    {"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}
+  ]
+}
