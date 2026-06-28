@@ -203,21 +203,23 @@ function insertChildAt(parts,path){
 }
 
 // Excel出力
-function exportXL(products,overhead){
+function exportXL(products){
   var wb=XL.utils.book_new();
-  var rows=[['BOM原価集計レポート'],['出力日時',new Date().toLocaleString('ja-JP')],['間接費率',overhead+'%'],[],
-    ['製品コード','製品名','製造数量','材料費/台','加工費/台','台あたり原価','ロット原価','間接費','総額']];
+  var rows=[['BOM原価集計レポート'],['出力日時',new Date().toLocaleString('ja-JP')],[],
+    ['製品コード','製品名','製造数量','目標コスト/台','材料費/台','加工費/台','台あたり原価','ロット原価','差分/台']];
   var tg=0;
   products.forEach(function(prod){
-    var c=productCost(prod),oh=c.total*overhead/100,g=c.total+oh; tg+=g;
-    rows.push([prod.id,prod.name,prod.quantity,c.mat,c.proc,c.unit,c.total,oh,g]);
+    var c=productCost(prod);
+    var diff=prod.targetCost>0?c.unit-prod.targetCost:'';
+    tg+=c.total;
+    rows.push([prod.id,prod.name,prod.quantity,prod.targetCost||'',c.mat,c.proc,c.unit,c.total,diff]);
   });
-  rows.push([],[,'','','','','','','合計',tg]);
+  rows.push([],[,'','','','','','合計',tg]);
   var ws1=XL.utils.aoa_to_sheet(rows);
-  ws1['!cols']=[{wch:12},{wch:20},{wch:10},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14}];
+  ws1['!cols']=[{wch:12},{wch:20},{wch:10},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:12}];
   XL.utils.book_append_sheet(wb,ws1,'サマリ');
   products.forEach(function(prod){
-    var sr=[[prod.id+'　'+prod.name+'　×'+prod.quantity+'台'],[],
+    var sr=[[prod.id+'　'+prod.name+'　×'+prod.quantity+'台'+(prod.targetCost>0?'　目標コスト: '+fmt(prod.targetCost)+'/台':'')],[],
       ['階層','部品名','種別','品目名','単位','数量','サプライヤ','ロット数量','単価','金額']];
     function flat(part,depth){
       var pre=Array(depth+1).join('　'),c=partCost(part);
@@ -237,9 +239,11 @@ function exportXL(products,overhead){
     sr.push([],[,'【製品合計】','','','','','','','材料費',c.mat],
       ['','','','','','','','','加工費',c.proc],
       ['','','','','','','','','台あたり原価',c.unit],
-      ['','','','','','','','','ロット原価×'+prod.quantity,c.total],
-      ['','','','','','','','','間接費('+overhead+'%)',c.total*overhead/100],
-      ['','','','','','','','','総額',c.total*(1+overhead/100)]);
+      ['','','','','','','','','ロット原価×'+prod.quantity,c.total]);
+    if(prod.targetCost>0){
+      sr.push(['','','','','','','','','目標コスト/台',prod.targetCost],
+               ['','','','','','','','','差分/台',c.unit-prod.targetCost]);
+    }
     var ws=XL.utils.aoa_to_sheet(sr);
     ws['!cols']=[{wch:6},{wch:22},{wch:8},{wch:18},{wch:6},{wch:6},{wch:16},{wch:10},{wch:12},{wch:12}];
     XL.utils.book_append_sheet(wb,ws,prod.id.slice(0,28));
@@ -252,7 +256,6 @@ function App(){
   var ps=React_useState(makeSample); var products=ps[0],setProducts=ps[1];
   var as=React_useState([]); var archives=as[0],setArchives=as[1];
   var ss=React_useState(function(){return makeSample()[0].id;}); var selectedId=ss[0],setSelectedId=ss[1];
-  var os=React_useState(15); var overhead=os[0],setOverhead=os[1];
   var ts=React_useState('bom'); var tab=ts[0],setTab=ts[1];
   var sbs=React_useState(false); var showSB=sbs[0],setShowSB=sbs[1];
   var ans=React_useState(''); var arcNote=ans[0],setArcNote=ans[1];
@@ -303,18 +306,19 @@ function App(){
 
   function setQty(q){updProd(selectedId,function(p){return Object.assign({},p,{quantity:Math.max(1,Number(q)||1)});});}
   function setProdName(n){updProd(selectedId,function(p){return Object.assign({},p,{name:n});});}
+  function setTargetCost(v){updProd(selectedId,function(p){return Object.assign({},p,{targetCost:parseFloat(v)||0});});}
   function addProduct(){
     var id='PRD-'+String(products.length+1).padStart(3,'0');
     setProducts(function(prev){return prev.concat([{id:id,name:'新規製品',quantity:1,parts:[]}]);});
     setSelectedId(id);setShowSB(false);
   }
   function commitArchive(){
-    setArchives(function(prev){return [{id:uid('ARC'),note:arcNote.trim()||'バージョン確定',savedAt:new Date().toISOString(),overhead:overhead,products:JSON.parse(JSON.stringify(products))}].concat(prev);});
+    setArchives(function(prev){return [{id:uid('ARC'),note:arcNote.trim()||'バージョン確定',savedAt:new Date().toISOString(),products:JSON.parse(JSON.stringify(products))}].concat(prev);});
     setArcNote('');setShowAM(false);
   }
   function restoreArchive(arc){
     if(!window.confirm('「'+arc.note+'」を復元しますか？'))return;
-    setProducts(arc.products);setOverhead(arc.overhead||15);
+    setProducts(arc.products);
     setSelectedId(arc.products[0]?arc.products[0].id:null);setTab('bom');
   }
   function deleteArchive(id){if(!window.confirm('削除しますか？'))return;setArchives(function(prev){return prev.filter(function(a){return a.id!==id;});});}
@@ -347,8 +351,6 @@ function App(){
 
   var selected=products.filter(function(p){return p.id===selectedId;})[0];
   var c=selected?productCost(selected):null;
-  var ohAmt=c?c.total*overhead/100:0;
-  var grand=c?c.total+ohAmt:0;
 
   return (
     <div style={{minHeight:'100vh',display:'flex',flexDirection:'column'}}>
@@ -361,13 +363,8 @@ function App(){
             <div><div style={{fontWeight:700,fontSize:13,color:'#f1f5f9'}}>BOM COST</div><div style={{fontSize:9,color:'#64748b'}}>製造原価集計</div></div>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:5}}>
-            <button onClick={function(){exportXL(products,overhead);}} style={{padding:'5px 9px',background:'#14532d',border:'1px solid #16a34a',borderRadius:7,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📊 Excel</button>
+            <button onClick={function(){exportXL(products);}} style={{padding:'5px 9px',background:'#14532d',border:'1px solid #16a34a',borderRadius:7,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📊 Excel</button>
             <button onClick={function(){setShowAM(true);}} style={{padding:'5px 9px',background:'#1e2d4a',border:'1px solid #3b82f6',borderRadius:7,color:'#60a5fa',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📦 保存</button>
-            <div style={{display:'flex',alignItems:'center',gap:3,background:'#1e2533',padding:'4px 8px',borderRadius:7,border:'1px solid #2d3748'}}>
-              <span style={{fontSize:10,color:'#94a3b8'}}>間接費</span>
-              <input type="number" value={overhead} min={0} max={100} onChange={function(e){setOverhead(Number(e.target.value));}} style={{width:32,background:'transparent',border:'none',color:'#60a5fa',fontWeight:700,fontSize:13,textAlign:'right',outline:'none'}}/>
-              <span style={{fontSize:10,color:'#94a3b8'}}>%</span>
-            </div>
           </div>
         </div>
         <div style={{display:'flex',padding:'0 10px',borderTop:'1px solid #1e2533'}}>
@@ -390,14 +387,21 @@ function App(){
             </div>
             {products.map(function(p){
               var pc=productCost(p),sel=p.id===selectedId;
+              var hasTarget=p.targetCost>0;
+              var isOver=hasTarget&&pc.unit>p.targetCost;
               return <div key={p.id} onClick={function(){setSelectedId(p.id);setShowSB(false);}}
                 style={{padding:'10px 14px',cursor:'pointer',borderLeft:'3px solid '+(sel?'#3b82f6':'transparent'),borderBottom:'1px solid #1e2533',background:sel?'#1e2d4a':'transparent'}}>
                 <div style={{fontFamily:'monospace',fontSize:10,color:'#60a5fa'}}>{p.id}</div>
                 <div style={{fontWeight:600,color:'#e2e8f0',fontSize:13}}>{p.name}</div>
                 <div style={{display:'flex',justifyContent:'space-between',marginTop:3}}>
                   <span style={{fontSize:10,color:'#64748b'}}>×{p.quantity}台</span>
-                  <span style={{fontSize:11,color:'#8b5cf6',fontWeight:700}}>{fmt(pc.total)}</span>
+                  <span style={{fontSize:11,color:'#8b5cf6',fontWeight:700}}>{fmt(pc.unit)}/台</span>
                 </div>
+                {hasTarget&&<div style={{display:'flex',justifyContent:'flex-end',marginTop:2}}>
+                  <span style={{fontSize:9,color:isOver?'#ef4444':'#10b981',fontWeight:700}}>
+                    {isOver?'▲ 超過 '+fmt(pc.unit-p.targetCost):'▼ 余裕 '+fmt(p.targetCost-pc.unit)}
+                  </span>
+                </div>}
               </div>;
             })}
           </div>
@@ -411,6 +415,7 @@ function App(){
           <div>
             {/* 製品ヘッダー */}
             <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginBottom:12}}>
+              {/* 製品名・数量・目標コスト */}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <div style={{flex:'1 1 140px',minWidth:0}}>
                   <div style={{fontSize:10,color:'#64748b',marginBottom:2}}>製品名</div>
@@ -420,24 +425,51 @@ function App(){
                 <div>
                   <div style={{fontSize:10,color:'#64748b',marginBottom:2}}>製造数量</div>
                   <div style={{display:'flex',alignItems:'center',gap:5,background:'#0f1117',padding:'5px 8px',borderRadius:6,border:'1px solid #2d3748'}}>
-                    <input type="number" value={selected.quantity} min={1} onChange={function(e){setQty(e.target.value);}}
+                    <NumInput value={selected.quantity} onChange={function(v){setQty(v);}}
                       style={{width:48,background:'transparent',border:'none',color:'#60a5fa',fontWeight:700,fontSize:14,textAlign:'right',outline:'none'}}/>
                     <span style={{fontSize:10,color:'#94a3b8'}}>台</span>
                   </div>
                 </div>
+                <div>
+                  <div style={{fontSize:10,color:'#64748b',marginBottom:2}}>目標コスト/台</div>
+                  <div style={{display:'flex',alignItems:'center',gap:5,background:'#0f1117',padding:'5px 8px',borderRadius:6,border:'1px solid '+(selected.targetCost>0?(c.unit<=selected.targetCost?'#10b981':'#ef4444'):'#2d3748')}}>
+                    <span style={{fontSize:10,color:'#64748b'}}>¥</span>
+                    <NumInput value={selected.targetCost||0} onChange={function(v){setTargetCost(v);}}
+                      style={{width:72,background:'transparent',border:'none',color:selected.targetCost>0?(c.unit<=selected.targetCost?'#10b981':'#ef4444'):'#94a3b8',fontWeight:700,fontSize:14,textAlign:'right',outline:'none'}}/>
+                  </div>
+                </div>
               </div>
+              {/* コストカード */}
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:8}}>
-                {[{l:'材料費/台',v:fmt(c.mat),col:'#10b981'},{l:'加工費/台',v:fmt(c.proc),col:'#f59e0b'},{l:'台あたり原価',v:fmt(c.unit),col:'#3b82f6'},{l:'ロット原価×'+selected.quantity,v:fmt(c.total),col:'#8b5cf6'}].map(function(s){
+                {[
+                  {l:'材料費/台',v:fmt(c.mat),col:'#10b981'},
+                  {l:'加工費/台',v:fmt(c.proc),col:'#f59e0b'},
+                  {l:'台あたり原価',v:fmt(c.unit),col:'#3b82f6'},
+                  {l:'ロット原価×'+selected.quantity,v:fmt(c.total),col:'#8b5cf6'},
+                ].map(function(s){
                   return <div key={s.l} style={{background:'#0f1117',border:'1px solid #2d3748',borderRadius:7,padding:'7px 10px'}}>
                     <div style={{fontSize:10,color:'#64748b'}}>{s.l}</div>
                     <div style={{fontSize:14,fontWeight:700,color:s.col,marginTop:2}}>{s.v}</div>
                   </div>;
                 })}
               </div>
-              <div style={{paddingTop:7,borderTop:'1px solid #2d3748',display:'flex',alignItems:'center',flexWrap:'wrap',gap:4,fontSize:11}}>
-                <span style={{color:'#94a3b8'}}>{fmt(c.total)}</span><span style={{color:'#475569'}}>＋ 間接費{overhead}% {fmt(ohAmt)}</span>
-                <span style={{color:'#475569'}}>＝</span><span style={{color:'#f1f5f9',fontWeight:800,fontSize:14}}>{fmt(grand)}</span>
-              </div>
+              {/* 目標コスト差分 */}
+              {selected.targetCost>0&&(function(){
+                var diff=c.unit-selected.targetCost;
+                var isOver=diff>0;
+                return <div style={{paddingTop:7,borderTop:'1px solid #2d3748',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span style={{fontSize:11,color:'#64748b'}}>目標コスト比</span>
+                  <span style={{fontSize:13,fontWeight:800,color:isOver?'#ef4444':'#10b981'}}>
+                    {isOver?'▲':'▼'} {fmt(Math.abs(diff))}/台
+                  </span>
+                  <span style={{fontSize:10,color:isOver?'#ef4444':'#10b981'}}>
+                    ({isOver?'+':''}{Math.round(diff/selected.targetCost*100)}%)
+                  </span>
+                  <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>
+                    目標 {fmt(selected.targetCost)} → 実績 {fmt(c.unit)}
+                  </span>
+                </div>;
+              })()}
             </div>
             {selected.parts.map(function(pt,i){
               return <PartNode key={pt.id} part={pt} path={[i]} depth={0} cb={mkCb([i])} mkCb={mkCb}/>;
@@ -447,7 +479,7 @@ function App(){
         )}
 
         {tab==='supplier' && (
-          <SupplierView products={products} overhead={overhead} exportXL={exportXL}/>
+          <SupplierView products={products}/>
         )}
 
         {tab==='archive' && (
@@ -455,17 +487,17 @@ function App(){
             {archives.length===0
               ? <div style={{textAlign:'center',padding:'60px 20px',color:'#475569'}}><div style={{fontSize:36,marginBottom:12}}>📦</div><div style={{fontSize:13,fontWeight:600,color:'#64748b'}}>アーカイブがありません</div></div>
               : archives.map(function(arc){
-                  var tot=arc.products.reduce(function(s,p){return s+productCost(p).total;},0),g=tot*(1+(arc.overhead||15)/100);
+                  var tot=arc.products.reduce(function(s,p){return s+productCost(p).total;},0);
                   return <div key={arc.id} style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,overflow:'hidden',marginBottom:10}}>
                     <div style={{padding:'10px 12px',display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontWeight:700,color:'#f1f5f9',fontSize:13}}>{arc.note}</div>
                         <div style={{fontSize:10,color:'#64748b',marginTop:2}}>🕐 {fmtDate(arc.savedAt)}</div>
-                        <div style={{fontSize:13,color:'#8b5cf6',fontWeight:800,marginTop:3}}>{fmt(g)}</div>
+                        <div style={{fontSize:13,color:'#8b5cf6',fontWeight:800,marginTop:3}}>{fmt(tot)}</div>
                       </div>
                       <div style={{display:'flex',flexDirection:'column',gap:4}}>
                         <button onClick={function(){restoreArchive(arc);}} style={{padding:'4px 10px',background:'#1e3a5f',border:'1px solid #3b82f6',borderRadius:6,color:'#60a5fa',fontWeight:700,fontSize:11,cursor:'pointer'}}>復元</button>
-                        <button onClick={function(){exportXL(arc.products,arc.overhead||15);}} style={{padding:'4px 10px',background:'#14532d',border:'1px solid #16a34a',borderRadius:6,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer'}}>Excel</button>
+                        <button onClick={function(){exportXL(arc.products);}} style={{padding:'4px 10px',background:'#14532d',border:'1px solid #16a34a',borderRadius:6,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer'}}>Excel</button>
                         <button onClick={function(){deleteArchive(arc.id);}} style={{padding:'4px 10px',background:'#3a1a1a',border:'1px solid #7f1d1d',borderRadius:6,color:'#f87171',fontWeight:700,fontSize:11,cursor:'pointer'}}>削除</button>
                       </div>
                     </div>
@@ -482,8 +514,7 @@ function App(){
           <div style={{background:'#1a1f2e',border:'1px solid #3b82f6',borderRadius:14,padding:18,width:'100%',maxWidth:400}}>
             <div style={{fontWeight:700,fontSize:14,color:'#f1f5f9',marginBottom:10}}>📦 バージョンを保存</div>
             <div style={{background:'#0f1117',borderRadius:8,padding:'10px 12px',marginBottom:12}}>
-              {products.map(function(p){var pc=productCost(p);return <div key={p.id} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:'1px solid #1e2533'}}><span style={{fontSize:12,color:'#e2e8f0'}}>{p.name}</span><span style={{fontSize:12,color:'#8b5cf6',fontWeight:700}}>{fmt(pc.total)}</span></div>;})}
-              <div style={{display:'flex',justifyContent:'space-between',marginTop:7}}><span style={{fontSize:11,color:'#64748b'}}>間接費({overhead}%)込み総額</span><span style={{fontSize:13,color:'#f1f5f9',fontWeight:800}}>{fmt(products.reduce(function(s,p){return s+productCost(p).total;},0)*(1+overhead/100))}</span></div>
+              {products.map(function(p){var pc=productCost(p);return <div key={p.id} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:'1px solid #1e2533'}}><span style={{fontSize:12,color:'#e2e8f0'}}>{p.name}</span><span style={{fontSize:12,color:'#8b5cf6',fontWeight:700}}>{fmt(pc.unit)}/台</span></div>;})}
             </div>
             <input value={arcNote} onChange={function(e){setArcNote(e.target.value);}} placeholder="メモ（例：1次見積確定）" autoFocus
               onKeyDown={function(e){if(e.key==='Enter')commitArchive();}}
@@ -741,7 +772,7 @@ function calcSupplierSummary(products){
   return Object.keys(map).map(function(k){return map[k];}).sort(function(a,b){return b.total-a.total;});
 }
 
-function exportSupplierXL(products, overhead){
+function exportSupplierXL(products){
   var summary = calcSupplierSummary(products);
   var wb = XL.utils.book_new();
   // サマリシート
@@ -771,7 +802,7 @@ function exportSupplierXL(products, overhead){
 
 // ========== SupplierView ==========
 function SupplierView(props){
-  var products=props.products, overhead=props.overhead;
+  var products=props.products;
   var summary = calcSupplierSummary(products);
   var grandTotal = summary.reduce(function(s,sup){return s+sup.total;},0);
   var es=React_useState(null); var expanded=es[0],setExpanded=es[1];
@@ -787,7 +818,7 @@ function SupplierView(props){
             <div style={{fontSize:13,fontWeight:700,color:'#f1f5f9'}}>サプライヤ別原価集計</div>
             <div style={{fontSize:10,color:'#64748b',marginTop:2}}>全製品・全部品の発注コストをサプライヤ単位で集計</div>
           </div>
-          <button onClick={function(){exportSupplierXL(products,overhead);}}
+          <button onClick={function(){exportSupplierXL(products);}}
             style={{padding:'5px 10px',background:'#14532d',border:'1px solid #16a34a',borderRadius:7,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>
             📊 Excel出力
           </button>
