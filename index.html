@@ -585,16 +585,25 @@ function PartNode(props){
   );
 }
 
-// ========== 数値入力ヘルパー（編集中は文字列保持、blur時に確定） ==========
+// ========== 数値入力ヘルパー（編集中は文字列保持、blur時に確定、先頭0除去） ==========
 function NumInput(props){
   var ls=React_useState(String(props.value));var local=ls[0],setLocal=ls[1];
-  // 外部値が変わったら同期（別ロット選択時など）
   var prev=React.useRef(props.value);
   if(prev.current!==props.value){ prev.current=props.value; setLocal(String(props.value)); }
+  function handleChange(e){
+    var v=e.target.value;
+    // 先頭の余分な0を除去（"01"→"1"、"0."はそのまま）
+    if(/^0[0-9]/.test(v)) v=v.replace(/^0+/,'');
+    if(v==='') v='0';
+    setLocal(v);
+  }
+  function handleBlur(){
+    var n=parseFloat(local);
+    if(!isNaN(n)){ setLocal(String(n)); props.onChange(n); }
+    else{ setLocal(String(props.value)); }
+  }
   return <input type="text" inputMode="decimal" value={local}
-    onChange={function(e){setLocal(e.target.value);}}
-    onBlur={function(){var n=parseFloat(local);if(!isNaN(n)){props.onChange(n);}else{setLocal(String(props.value));}}}
-    style={props.style}/>;
+    onChange={handleChange} onBlur={handleBlur} style={props.style}/>;
 }
 
 // ========== ItemRow（材料・加工共通） ==========
@@ -612,10 +621,10 @@ function ItemRow(props){
         <button onClick={function(){if(window.confirm('「'+row.name+'」を削除しますか？'))props.onRemoveRow();}} style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #3a2530',color:'#94556a',cursor:'pointer',fontSize:9,flexShrink:0}}>✕</button>
         <input value={row.name} onChange={function(e){props.onSetField('name',e.target.value);}} placeholder={isMat?'材料名':'工程名'}
           style={{flex:'1 1 80px',minWidth:60,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 5px',fontSize:11,outline:'none'}}/>
-        {isMat&&<input value={row.unit} onChange={function(e){props.onSetField('unit',e.target.value);}}
-          style={{width:36,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 4px',fontSize:11,outline:'none',textAlign:'center'}}/>}
         <NumInput value={row.qty} onChange={function(v){props.onSetField('qty',v);}}
           style={{width:48,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 4px',fontSize:11,outline:'none',textAlign:'right'}}/>
+        {isMat&&<input value={row.unit} onChange={function(e){props.onSetField('unit',e.target.value);}}
+          style={{width:32,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#94a3b8',padding:'3px 4px',fontSize:11,outline:'none',textAlign:'center'}}/>}
         {/* サプライヤ選択 */}
         <select value={row.selectedSupplierId||(selSup?selSup.id:'')} onChange={function(e){props.onSelSup(e.target.value);}}
           style={{background:'#1a1f2e',border:'1px solid '+color+'55',borderRadius:4,color:color,padding:'2px 4px',fontSize:10,cursor:'pointer',outline:'none',maxWidth:110,minWidth:70,fontWeight:700}}>
