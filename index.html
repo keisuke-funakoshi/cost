@@ -10,14 +10,20 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="BOM原価"/>
-  <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#0f1117;color:#e2e8f0;font-family:'Segoe UI','Noto Sans JP',sans-serif}</style>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0f1117;color:#e2e8f0;font-family:'Segoe UI','Noto Sans JP',sans-serif}
+    input[type=number]::-webkit-inner-spin-button{opacity:0.5}
+  </style>
   <script>
     if('serviceWorker' in navigator){
       navigator.serviceWorker.getRegistrations().then(function(r){r.forEach(function(x){x.unregister();});});
       caches.keys().then(function(k){k.forEach(function(x){caches.delete(x);});});
       window.addEventListener('load',function(){navigator.serviceWorker.register('./sw.js');});
     }
-    window.onerror=function(msg,src,line){document.getElementById('root').innerHTML='<div style="color:red;padding:20px;font-family:monospace;background:#fff;white-space:pre">Error: '+msg+'\nLine: '+line+'</div>';};
+    window.onerror=function(msg,src,line){
+      document.getElementById('root').innerHTML='<pre style="color:red;padding:20px;background:#fff">'+msg+'\nL'+line+'</pre>';
+    };
   </script>
 </head>
 <body>
@@ -27,125 +33,160 @@
   <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script type="text/babel" data-presets="env,react">
-const {useState,useCallback} = React;
-const XL = window.XLSX;
+var React_useState = React.useState;
+var React_useCallback = React.useCallback;
+var XL = window.XLSX;
 
 // =============================================================
 // データ構造
-// lot: { id, name, unitCost }   ← 単価を直接入力
-// material: { id, name, unit, qty, lots[], selectedLotId }
-// process:  { id, name, qty,       lots[], selectedLotId }
-// part: { id, name, materials[], processes[], children[] }
+//
+// supplier: { id, name, lots:[ {id, lotQty(数値), unitCost} ] }
+// material: { id, name, unit, qty,
+//             suppliers:[], selectedSupplierId, selectedLotId }
+// process:  { id, name, qty,
+//             suppliers:[], selectedSupplierId, selectedLotId }
+// part:     { id, name, materials[], processes[], children[] }
 // =============================================================
-let _seq = 1000;
-function uid(p){ return p + '-' + (++_seq); }
 
-function newLot(name, unitCost){
-  return { id: uid('L'), name: name || 'ロット', unitCost: unitCost || 0 };
+var _seq = 1000;
+function uid(p){ return p+'-'+(++_seq); }
+
+function newLot(qty, unitCost){
+  return { id:uid('L'), lotQty:Number(qty)||1, unitCost:Number(unitCost)||0 };
+}
+function newSupplier(name){
+  return { id:uid('S'), name:name||'新規サプライヤ', lots:[ newLot(100,0) ] };
 }
 function newMat(){
+  var s1=newSupplier('サプライヤA'), s2=newSupplier('サプライヤB');
   return { id:uid('M'), name:'新規材料', unit:'個', qty:1,
-    lots:[ newLot('小ロット',100), newLot('大ロット',80) ],
-    selectedLotId:null };
+           suppliers:[s1,s2], selectedSupplierId:s1.id, selectedLotId:s1.lots[0].id };
 }
 function newProc(){
+  var s1=newSupplier('協力会社A'), s2=newSupplier('協力会社B');
   return { id:uid('P'), name:'新規工程', qty:1,
-    lots:[ newLot('小ロット',2500), newLot('大ロット',2000) ],
-    selectedLotId:null };
+           suppliers:[s1,s2], selectedSupplierId:s1.id, selectedLotId:s1.lots[0].id };
 }
-function newPart(name){ return { id:uid('PT'), name:name||'新規部品', materials:[], processes:[], children:[] }; }
+function newPart(name){
+  return { id:uid('PT'), name:name||'新規部品', materials:[], processes:[], children:[] };
+}
 
-function getSelLot(row){
-  var lot = row.lots.filter(function(l){ return l.id === row.selectedLotId; })[0];
-  return lot || row.lots[0] || null;
+// 選択中サプライヤ取得
+function getSelSupplier(row){
+  return row.suppliers.filter(function(s){return s.id===row.selectedSupplierId;})[0]
+    || row.suppliers[0] || null;
 }
-function getUnitCost(row){ var l=getSelLot(row); return l ? l.unitCost : 0; }
-function rowCost(row){ return getUnitCost(row) * (row.qty || 1); }
+// 選択中ロット取得（サプライヤのlotsから）
+function getSelLot(row){
+  var sup = getSelSupplier(row);
+  if(!sup) return null;
+  return sup.lots.filter(function(l){return l.id===row.selectedLotId;})[0]
+    || sup.lots[0] || null;
+}
+function getUnitCost(row){ var l=getSelLot(row); return l?l.unitCost:0; }
+function rowCost(row){ return getUnitCost(row)*(row.qty||1); }
 
 function partCost(part){
-  var mat  = part.materials.reduce(function(s,m){ return s+rowCost(m); }, 0);
-  var proc = part.processes.reduce(function(s,p){ return s+rowCost(p); }, 0);
-  var sub  = part.children.reduce(function(s,c){ return s+partCost(c).total; }, 0);
-  return { mat:mat, proc:proc, sub:sub, total:mat+proc+sub };
+  var mat = part.materials.reduce(function(s,m){return s+rowCost(m);},0);
+  var proc= part.processes.reduce(function(s,p){return s+rowCost(p);},0);
+  var sub = part.children.reduce(function(s,c){return s+partCost(c).total;},0);
+  return {mat:mat,proc:proc,sub:sub,total:mat+proc+sub};
 }
 function productCost(prod){
-  var mat=0, proc=0, sub=0;
-  prod.parts.forEach(function(pt){ var c=partCost(pt); mat+=c.mat; proc+=c.proc; sub+=c.sub; });
-  var unit = mat+proc+sub;
-  return { mat:mat, proc:proc, sub:sub, unit:unit, total:unit*prod.quantity };
+  var mat=0,proc=0,sub=0;
+  prod.parts.forEach(function(pt){var c=partCost(pt);mat+=c.mat;proc+=c.proc;sub+=c.sub;});
+  var unit=mat+proc+sub;
+  return {mat:mat,proc:proc,sub:sub,unit:unit,total:unit*prod.quantity};
 }
+
+var fmt=function(n){return '¥'+Math.round(n).toLocaleString('ja-JP');};
+var fmtDate=function(iso){
+  var d=new Date(iso);
+  return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0')
+    +' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+};
 
 // サンプルデータ
 function makeSample(){
+  function ms(sups){ // make suppliers array
+    return sups.map(function(s){
+      return {id:uid('S'),name:s.name,lots:s.lots.map(function(l){return newLot(l.q,l.c);})};
+    });
+  }
+  function makeRow(type,name,unit,qty,supsData){
+    var sups=ms(supsData);
+    return {id:uid(type),name:name,unit:unit||null,qty:qty,
+            suppliers:sups,selectedSupplierId:sups[0].id,selectedLotId:sups[0].lots[0].id};
+  }
   return [
-    { id:'PRD-001', name:'産業用フレームA', quantity:10, parts:[
-      { id:uid('PT'), name:'メインフレーム',
-        materials:[
-          { id:uid('M'), name:'鋼板 SS400 t=3mm', unit:'kg', qty:25,
-            lots:[ newLot('100kg単価',120), newLot('500kg単価',95) ], selectedLotId:null },
-          { id:uid('M'), name:'角パイプ 50×50', unit:'m', qty:6,
-            lots:[ newLot('50m単価',480), newLot('200m単価',380) ], selectedLotId:null },
-        ],
-        processes:[
-          { id:uid('P'), name:'レーザー切断', qty:1,
-            lots:[ newLot('小ロット(50台)',2500), newLot('大ロット(100台)',2200) ], selectedLotId:null },
-          { id:uid('P'), name:'曲げ加工', qty:1,
-            lots:[ newLot('小ロット(50台)',1800), newLot('大ロット(100台)',1600) ], selectedLotId:null },
-          { id:uid('P'), name:'溶接', qty:1,
-            lots:[ newLot('小ロット(50台)',3800), newLot('大ロット(100台)',3400) ], selectedLotId:null },
-        ],
-        children:[
-          { id:uid('PT'), name:'補強リブ',
-            materials:[
-              { id:uid('M'), name:'鋼板 t=2mm', unit:'kg', qty:5,
-                lots:[ newLot('100kg単価',120), newLot('500kg単価',95) ], selectedLotId:null }
-            ],
-            processes:[
-              { id:uid('P'), name:'プレス加工', qty:2,
-                lots:[ newLot('100台単価',900), newLot('500台単価',760) ], selectedLotId:null }
-            ],
-            children:[] }
-        ] },
-      { id:uid('PT'), name:'ブラケット',
-        materials:[
-          { id:uid('M'), name:'アルミ板 A5052 t=2mm', unit:'kg', qty:8,
-            lots:[ newLot('100kg単価',380), newLot('500kg単価',320) ], selectedLotId:null }
-        ],
-        processes:[
-          { id:uid('P'), name:'プレス加工', qty:2,
-            lots:[ newLot('100台単価',900), newLot('500台単価',760) ], selectedLotId:null },
-          { id:uid('P'), name:'表面処理（塗装）', qty:1,
-            lots:[ newLot('100台単価',1500), newLot('500台単価',1200) ], selectedLotId:null },
-        ],
-        children:[] },
+    {id:'PRD-001',name:'産業用フレームA',quantity:10,parts:[
+      {id:uid('PT'),name:'メインフレーム',materials:[
+        makeRow('M','鋼板 SS400 t=3mm','kg',25,[
+          {name:'鉄鋼商事A',lots:[{q:100,c:120},{q:500,c:95}]},
+          {name:'鉄鋼商事B',lots:[{q:100,c:130},{q:500,c:100}]},
+        ]),
+        makeRow('M','角パイプ 50×50','m',6,[
+          {name:'鉄鋼商事A',lots:[{q:50,c:480},{q:200,c:380}]},
+          {name:'メタルワン',lots:[{q:50,c:460},{q:200,c:360}]},
+        ]),
+      ],processes:[
+        makeRow('P','レーザー切断',null,1,[
+          {name:'切削加工㈱',lots:[{q:50,c:2500},{q:100,c:2200}]},
+          {name:'精密工業㈱',lots:[{q:50,c:2400},{q:100,c:2100}]},
+        ]),
+        makeRow('P','溶接',null,1,[
+          {name:'溶接工業㈱',lots:[{q:50,c:3800},{q:100,c:3400}]},
+          {name:'製缶㈱',    lots:[{q:50,c:3600},{q:100,c:3200}]},
+        ]),
+      ],children:[
+        {id:uid('PT'),name:'補強リブ',materials:[
+          makeRow('M','鋼板 t=2mm','kg',5,[
+            {name:'鉄鋼商事A',lots:[{q:100,c:120},{q:500,c:95}]},
+          ]),
+        ],processes:[
+          makeRow('P','プレス加工',null,2,[
+            {name:'プレス工業㈱',lots:[{q:100,c:900},{q:500,c:760}]},
+          ]),
+        ],children:[]},
+      ]},
+      {id:uid('PT'),name:'ブラケット',materials:[
+        makeRow('M','アルミ板 A5052 t=2mm','kg',8,[
+          {name:'アルミ商事',lots:[{q:100,c:380},{q:500,c:320}]},
+          {name:'軽金属㈱',  lots:[{q:100,c:370},{q:500,c:310}]},
+        ]),
+      ],processes:[
+        makeRow('P','プレス加工',null,2,[
+          {name:'プレス工業㈱',lots:[{q:100,c:900},{q:500,c:760}]},
+        ]),
+        makeRow('P','表面処理（塗装）',null,1,[
+          {name:'塗装工業㈱',lots:[{q:100,c:1500},{q:500,c:1200}]},
+          {name:'表面処理㈱',lots:[{q:100,c:1400},{q:500,c:1150}]},
+        ]),
+      ],children:[]},
     ]},
-    { id:'PRD-002', name:'精密ブラケットB', quantity:50, parts:[
-      { id:uid('PT'), name:'本体',
-        materials:[
-          { id:uid('M'), name:'アルミ板 A5052 t=2mm', unit:'kg', qty:3,
-            lots:[ newLot('100kg単価',380), newLot('500kg単価',320) ], selectedLotId:null }
-        ],
-        processes:[
-          { id:uid('P'), name:'NC加工', qty:1,
-            lots:[ newLot('100台単価',3200), newLot('500台単価',2600) ], selectedLotId:null },
-          { id:uid('P'), name:'表面処理（塗装）', qty:1,
-            lots:[ newLot('100台単価',1500), newLot('500台単価',1200) ], selectedLotId:null },
-        ],
-        children:[] }
+    {id:'PRD-002',name:'精密ブラケットB',quantity:50,parts:[
+      {id:uid('PT'),name:'本体',materials:[
+        makeRow('M','アルミ板 A5052 t=2mm','kg',3,[
+          {name:'アルミ商事',lots:[{q:100,c:380},{q:500,c:320}]},
+          {name:'軽金属㈱',  lots:[{q:100,c:370},{q:500,c:310}]},
+        ]),
+      ],processes:[
+        makeRow('P','NC加工',null,1,[
+          {name:'精密工業㈱',lots:[{q:100,c:3200},{q:500,c:2600}]},
+          {name:'切削加工㈱',lots:[{q:100,c:3000},{q:500,c:2500}]},
+        ]),
+        makeRow('P','表面処理（塗装）',null,1,[
+          {name:'塗装工業㈱',lots:[{q:100,c:1500},{q:500,c:1200}]},
+        ]),
+      ],children:[]},
     ]},
   ];
 }
 
-const fmt = function(n){ return '¥'+Math.round(n).toLocaleString('ja-JP'); };
-const fmtDate = function(iso){
-  var d=new Date(iso);
-  return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-};
-
 // ツリー操作
 function updatePartAt(parts,path,fn){
   if(!path.length) return parts;
-  var h=path[0], t=path.slice(1);
+  var h=path[0],t=path.slice(1);
   return parts.map(function(pt,i){
     if(i!==h) return pt;
     if(t.length===0) return fn(pt);
@@ -153,160 +194,161 @@ function updatePartAt(parts,path,fn){
   });
 }
 function removePartAt(parts,path){
-  if(path.length===1) return parts.filter(function(_,i){ return i!==path[0]; });
+  if(path.length===1) return parts.filter(function(_,i){return i!==path[0];});
   var h=path[0],t=path.slice(1);
-  return parts.map(function(pt,i){ return i!==h ? pt : Object.assign({},pt,{children:removePartAt(pt.children,t)}); });
+  return parts.map(function(pt,i){return i!==h?pt:Object.assign({},pt,{children:removePartAt(pt.children,t)});});
 }
 function insertChildAt(parts,path){
-  return updatePartAt(parts,path,function(pt){ return Object.assign({},pt,{children:pt.children.concat([newPart()])}); });
+  return updatePartAt(parts,path,function(pt){return Object.assign({},pt,{children:pt.children.concat([newPart()])});});
 }
 
 // Excel出力
-function exportXL(products, overhead){
-  var wb = XL.utils.book_new();
-  // サマリ
-  var rows = [
-    ['BOM原価集計レポート'],
-    ['出力日時', new Date().toLocaleString('ja-JP')],
-    ['間接費率', overhead+'%'],
-    [],
-    ['製品コード','製品名','製造数量','材料費/台','加工費/台','台あたり原価','ロット原価','間接費','総額'],
-  ];
-  var totalGrand = 0;
+function exportXL(products,overhead){
+  var wb=XL.utils.book_new();
+  var rows=[['BOM原価集計レポート'],['出力日時',new Date().toLocaleString('ja-JP')],['間接費率',overhead+'%'],[],
+    ['製品コード','製品名','製造数量','材料費/台','加工費/台','台あたり原価','ロット原価','間接費','総額']];
+  var tg=0;
   products.forEach(function(prod){
-    var c=productCost(prod), oh=c.total*overhead/100, grand=c.total+oh;
-    totalGrand += grand;
-    rows.push([prod.id, prod.name, prod.quantity, c.mat, c.proc, c.unit, c.total, oh, grand]);
+    var c=productCost(prod),oh=c.total*overhead/100,g=c.total+oh; tg+=g;
+    rows.push([prod.id,prod.name,prod.quantity,c.mat,c.proc,c.unit,c.total,oh,g]);
   });
-  rows.push([]); rows.push(['','','','','','','','合計',totalGrand]);
-  var ws1 = XL.utils.aoa_to_sheet(rows);
-  ws1['!cols'] = [{wch:12},{wch:20},{wch:10},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14}];
-  XL.utils.book_append_sheet(wb, ws1, 'サマリ');
-
-  // 製品別シート
+  rows.push([],[,'','','','','','','合計',tg]);
+  var ws1=XL.utils.aoa_to_sheet(rows);
+  ws1['!cols']=[{wch:12},{wch:20},{wch:10},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14}];
+  XL.utils.book_append_sheet(wb,ws1,'サマリ');
   products.forEach(function(prod){
-    var sheetRows = [];
-    sheetRows.push([prod.id+'　'+prod.name+'　製造数量: '+prod.quantity+'台']);
-    sheetRows.push([]);
-    sheetRows.push(['階層','部品名','種別','品目名','単位','数量','選択ロット','単価','金額']);
-
-    function flatPart(part, depth){
-      var prefix = Array(depth+1).join('　');
-      var c = partCost(part);
-      sheetRows.push(['L'+depth, prefix+part.name, '【部品合計】','','','','','', c.total]);
+    var sr=[[prod.id+'　'+prod.name+'　×'+prod.quantity+'台'],[],
+      ['階層','部品名','種別','品目名','単位','数量','サプライヤ','ロット数量','単価','金額']];
+    function flat(part,depth){
+      var pre=Array(depth+1).join('　'),c=partCost(part);
+      sr.push(['L'+depth,pre+part.name,'【合計】','','','','','','',c.total]);
       part.materials.forEach(function(m){
-        var lot=getSelLot(m), uc=getUnitCost(m);
-        sheetRows.push(['', prefix+'  '+m.name, '材料', m.name, m.unit, m.qty, lot?lot.name:'', uc, rowCost(m)]);
+        var sup=getSelSupplier(m),lot=getSelLot(m),uc=getUnitCost(m);
+        sr.push(['',pre+'  '+m.name,'材料',m.name,m.unit,m.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(m)]);
       });
       part.processes.forEach(function(p){
-        var lot=getSelLot(p), uc=getUnitCost(p);
-        sheetRows.push(['', prefix+'  '+p.name, '加工', p.name, '工程', p.qty, lot?lot.name:'', uc, rowCost(p)]);
+        var sup=getSelSupplier(p),lot=getSelLot(p),uc=getUnitCost(p);
+        sr.push(['',pre+'  '+p.name,'加工',p.name,'工程',p.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(p)]);
       });
-      part.children.forEach(function(child){ flatPart(child, depth+1); });
+      part.children.forEach(function(c){flat(c,depth+1);});
     }
-    prod.parts.forEach(function(pt){ flatPart(pt,0); });
-
-    var c = productCost(prod);
-    sheetRows.push([]); sheetRows.push(['','【製品合計】','','','','','','材料費',c.mat]);
-    sheetRows.push(['','','','','','','','加工費',c.proc]);
-    sheetRows.push(['','','','','','','','台あたり原価',c.unit]);
-    sheetRows.push(['','','','','','','','ロット原価×'+prod.quantity,c.total]);
-    sheetRows.push(['','','','','','','','間接費('+overhead+'%)',c.total*overhead/100]);
-    sheetRows.push(['','','','','','','','総額',c.total*(1+overhead/100)]);
-
-    var ws = XL.utils.aoa_to_sheet(sheetRows);
-    ws['!cols'] = [{wch:6},{wch:24},{wch:10},{wch:20},{wch:6},{wch:8},{wch:18},{wch:14},{wch:14}];
-    XL.utils.book_append_sheet(wb, ws, prod.id.slice(0,28));
+    prod.parts.forEach(function(pt){flat(pt,0);});
+    var c=productCost(prod);
+    sr.push([],[,'【製品合計】','','','','','','','材料費',c.mat],
+      ['','','','','','','','','加工費',c.proc],
+      ['','','','','','','','','台あたり原価',c.unit],
+      ['','','','','','','','','ロット原価×'+prod.quantity,c.total],
+      ['','','','','','','','','間接費('+overhead+'%)',c.total*overhead/100],
+      ['','','','','','','','','総額',c.total*(1+overhead/100)]);
+    var ws=XL.utils.aoa_to_sheet(sr);
+    ws['!cols']=[{wch:6},{wch:22},{wch:8},{wch:18},{wch:6},{wch:6},{wch:16},{wch:10},{wch:12},{wch:12}];
+    XL.utils.book_append_sheet(wb,ws,prod.id.slice(0,28));
   });
-
-  XL.writeFile(wb, 'BOM原価集計_'+new Date().toLocaleDateString('ja-JP').replace(/\//g,'-')+'.xlsx');
+  XL.writeFile(wb,'BOM原価集計_'+new Date().toLocaleDateString('ja-JP').replace(/\//g,'-')+'.xlsx');
 }
 
-// ========== メインアプリ ==========
+// ========== App ==========
 function App(){
-  var init = makeSample;
-  var ps = useState(init); var products=ps[0], setProducts=ps[1];
-  var as = useState([]); var archives=as[0], setArchives=as[1];
-  var ss = useState(function(){ return makeSample()[0].id; }); var selectedId=ss[0], setSelectedId=ss[1];
-  var os = useState(15); var overhead=os[0], setOverhead=os[1];
-  var ts = useState('bom'); var tab=ts[0], setTab=ts[1];
-  var sbs = useState(false); var showSidebar=sbs[0], setShowSidebar=sbs[1];
-  var ans = useState(''); var archiveNote=ans[0], setArchiveNote=ans[1];
-  var ams = useState(false); var showArcModal=ams[0], setShowArcModal=ams[1];
+  var ps=React_useState(makeSample); var products=ps[0],setProducts=ps[1];
+  var as=React_useState([]); var archives=as[0],setArchives=as[1];
+  var ss=React_useState(function(){return makeSample()[0].id;}); var selectedId=ss[0],setSelectedId=ss[1];
+  var os=React_useState(15); var overhead=os[0],setOverhead=os[1];
+  var ts=React_useState('bom'); var tab=ts[0],setTab=ts[1];
+  var sbs=React_useState(false); var showSB=sbs[0],setShowSB=sbs[1];
+  var ans=React_useState(''); var arcNote=ans[0],setArcNote=ans[1];
+  var ams=React_useState(false); var showAM=ams[0],setShowAM=ams[1];
 
-  var updProd = useCallback(function(pid,fn){
-    setProducts(function(prev){ return prev.map(function(p){ return p.id===pid ? fn(p) : p; }); });
+  var updProd=React_useCallback(function(pid,fn){
+    setProducts(function(prev){return prev.map(function(p){return p.id===pid?fn(p):p;});});
   },[]);
-
-  function updTree(path,fn){ updProd(selectedId,function(p){ return Object.assign({},p,{parts:updatePartAt(p.parts,path,fn)}); }); }
-
-  function addChild(path){ updProd(selectedId,function(p){ return Object.assign({},p,{parts:insertChildAt(p.parts,path)}); }); }
-  function removePart(path){ updProd(selectedId,function(p){ return Object.assign({},p,{parts:removePartAt(p.parts,path)}); }); }
-  function addRoot(){ updProd(selectedId,function(p){ return Object.assign({},p,{parts:p.parts.concat([newPart()])}); }); }
-  function renamePart(path,name){ updTree(path,function(pt){ return Object.assign({},pt,{name:name}); }); }
+  function updTree(path,fn){updProd(selectedId,function(p){return Object.assign({},p,{parts:updatePartAt(p.parts,path,fn)});});}
+  function addChild(path){updProd(selectedId,function(p){return Object.assign({},p,{parts:insertChildAt(p.parts,path)});});}
+  function removePart(path){updProd(selectedId,function(p){return Object.assign({},p,{parts:removePartAt(p.parts,path)});});}
+  function addRoot(){updProd(selectedId,function(p){return Object.assign({},p,{parts:p.parts.concat([newPart()])});});}
+  function renamePart(path,name){updTree(path,function(pt){return Object.assign({},pt,{name:name});});}
 
   // 材料
-  function addMat(path){ updTree(path,function(pt){ return Object.assign({},pt,{materials:pt.materials.concat([newMat()])}); }); }
-  function removeMat(path,mid){ updTree(path,function(pt){ return Object.assign({},pt,{materials:pt.materials.filter(function(m){ return m.id!==mid; })}); }); }
-  function updMat(path,mid,fn){ updTree(path,function(pt){ return Object.assign({},pt,{materials:pt.materials.map(function(m){ return m.id===mid?fn(m):m; })}); }); }
-  function setMF(path,mid,f,v){ updMat(path,mid,function(m){ var o=Object.assign({},m); o[f]=(f==='name'||f==='unit')?v:Number(v); return o; }); }
-  function selML(path,mid,lid){ updMat(path,mid,function(m){ return Object.assign({},m,{selectedLotId:lid}); }); }
-  function addML(path,mid){ updMat(path,mid,function(m){ var l=newLot('新ロット',0); return Object.assign({},m,{lots:m.lots.concat([l]),selectedLotId:m.selectedLotId||l.id}); }); }
-  function updML(path,mid,lid,f,v){ updMat(path,mid,function(m){ return Object.assign({},m,{lots:m.lots.map(function(l){ return l.id===lid?Object.assign({},l,(function(o){o[f]=(f==='name')?v:Number(v);return o;})({})):l; })}); }); }
-  function removeML(path,mid,lid){ updMat(path,mid,function(m){ var lots=m.lots.filter(function(l){return l.id!==lid;}); return Object.assign({},m,{lots:lots,selectedLotId:m.selectedLotId===lid?(lots[0]?lots[0].id:null):m.selectedLotId}); }); }
+  function addMat(path){updTree(path,function(pt){return Object.assign({},pt,{materials:pt.materials.concat([newMat()])});});}
+  function removeMat(path,mid){updTree(path,function(pt){return Object.assign({},pt,{materials:pt.materials.filter(function(m){return m.id!==mid;})});});}
+  function updMat(path,mid,fn){updTree(path,function(pt){return Object.assign({},pt,{materials:pt.materials.map(function(m){return m.id===mid?fn(m):m;})});});}
+  function setMF(path,mid,f,v){updMat(path,mid,function(m){var o=Object.assign({},m);o[f]=(f==='name'||f==='unit')?v:Number(v);return o;});}
+  // サプライヤ選択（サプライヤ変更時はそのサプライヤの先頭ロットを自動選択）
+  function selMSup(path,mid,sid){updMat(path,mid,function(m){
+    var sup=m.suppliers.filter(function(s){return s.id===sid;})[0];
+    return Object.assign({},m,{selectedSupplierId:sid,selectedLotId:sup&&sup.lots[0]?sup.lots[0].id:null});
+  });}
+  function selMLot(path,mid,lid){updMat(path,mid,function(m){return Object.assign({},m,{selectedLotId:lid});});}
+  // サプライヤCRUD
+  function addMSup(path,mid){updMat(path,mid,function(m){var s=newSupplier();return Object.assign({},m,{suppliers:m.suppliers.concat([s]),selectedSupplierId:m.suppliers.length===0?s.id:m.selectedSupplierId,selectedLotId:m.suppliers.length===0?s.lots[0].id:m.selectedLotId});});}
+  function updMSup(path,mid,sid,field,val){updMat(path,mid,function(m){return Object.assign({},m,{suppliers:m.suppliers.map(function(s){return s.id===sid?Object.assign({},s,(function(o){o[field]=val;return o;})({})):s;})});});}
+  function removeMSup(path,mid,sid){updMat(path,mid,function(m){var sups=m.suppliers.filter(function(s){return s.id!==sid;});var ns=sups[0]||null;return Object.assign({},m,{suppliers:sups,selectedSupplierId:ns?ns.id:null,selectedLotId:ns&&ns.lots[0]?ns.lots[0].id:null});});}
+  // ロットCRUD（材料）
+  function addMLot(path,mid,sid){updMat(path,mid,function(m){return Object.assign({},m,{suppliers:m.suppliers.map(function(s){if(s.id!==sid)return s;var l=newLot(1,0);return Object.assign({},s,{lots:s.lots.concat([l])});})});});}
+  function updMLot(path,mid,sid,lid,f,v){updMat(path,mid,function(m){return Object.assign({},m,{suppliers:m.suppliers.map(function(s){if(s.id!==sid)return s;return Object.assign({},s,{lots:s.lots.map(function(l){return l.id===lid?Object.assign({},l,(function(o){o[f]=Number(v);return o;})({})):l;})});})});});}
+  function removeMLot(path,mid,sid,lid){updMat(path,mid,function(m){return Object.assign({},m,{suppliers:m.suppliers.map(function(s){if(s.id!==sid)return s;var lots=s.lots.filter(function(l){return l.id!==lid;});return Object.assign({},s,{lots:lots});})});});}
 
-  // 加工
-  function addProc(path){ updTree(path,function(pt){ return Object.assign({},pt,{processes:pt.processes.concat([newProc()])}); }); }
-  function removeProc(path,pid){ updTree(path,function(pt){ return Object.assign({},pt,{processes:pt.processes.filter(function(p){ return p.id!==pid; })}); }); }
-  function updProc(path,pid,fn){ updTree(path,function(pt){ return Object.assign({},pt,{processes:pt.processes.map(function(p){ return p.id===pid?fn(p):p; })}); }); }
-  function setPF(path,pid,f,v){ updProc(path,pid,function(p){ var o=Object.assign({},p); o[f]=(f==='name')?v:Number(v); return o; }); }
-  function selPL(path,pid,lid){ updProc(path,pid,function(p){ return Object.assign({},p,{selectedLotId:lid}); }); }
-  function addPL(path,pid){ updProc(path,pid,function(p){ var l=newLot('新ロット',0); return Object.assign({},p,{lots:p.lots.concat([l]),selectedLotId:p.selectedLotId||l.id}); }); }
-  function updPL(path,pid,lid,f,v){ updProc(path,pid,function(p){ return Object.assign({},p,{lots:p.lots.map(function(l){ return l.id===lid?Object.assign({},l,(function(o){o[f]=(f==='name')?v:Number(v);return o;})({})):l; })}); }); }
-  function removePL(path,pid,lid){ updProc(path,pid,function(p){ var lots=p.lots.filter(function(l){return l.id!==lid;}); return Object.assign({},p,{lots:lots,selectedLotId:p.selectedLotId===lid?(lots[0]?lots[0].id:null):p.selectedLotId}); }); }
+  // 加工（材料と同構造）
+  function addProc(path){updTree(path,function(pt){return Object.assign({},pt,{processes:pt.processes.concat([newProc()])});});}
+  function removeProc(path,pid){updTree(path,function(pt){return Object.assign({},pt,{processes:pt.processes.filter(function(p){return p.id!==pid;})});});}
+  function updProc(path,pid,fn){updTree(path,function(pt){return Object.assign({},pt,{processes:pt.processes.map(function(p){return p.id===pid?fn(p):p;})});});}
+  function setPF(path,pid,f,v){updProc(path,pid,function(p){var o=Object.assign({},p);o[f]=(f==='name')?v:Number(v);return o;});}
+  function selPSup(path,pid,sid){updProc(path,pid,function(p){var sup=p.suppliers.filter(function(s){return s.id===sid;})[0];return Object.assign({},p,{selectedSupplierId:sid,selectedLotId:sup&&sup.lots[0]?sup.lots[0].id:null});});}
+  function selPLot(path,pid,lid){updProc(path,pid,function(p){return Object.assign({},p,{selectedLotId:lid});});}
+  function addPSup(path,pid){updProc(path,pid,function(p){var s=newSupplier();return Object.assign({},p,{suppliers:p.suppliers.concat([s]),selectedSupplierId:p.suppliers.length===0?s.id:p.selectedSupplierId,selectedLotId:p.suppliers.length===0?s.lots[0].id:p.selectedLotId});});}
+  function updPSup(path,pid,sid,field,val){updProc(path,pid,function(p){return Object.assign({},p,{suppliers:p.suppliers.map(function(s){return s.id===sid?Object.assign({},s,(function(o){o[field]=val;return o;})({})):s;})});});}
+  function removePSup(path,pid,sid){updProc(path,pid,function(p){var sups=p.suppliers.filter(function(s){return s.id!==sid;});var ns=sups[0]||null;return Object.assign({},p,{suppliers:sups,selectedSupplierId:ns?ns.id:null,selectedLotId:ns&&ns.lots[0]?ns.lots[0].id:null});});}
+  function addPLot(path,pid,sid){updProc(path,pid,function(p){return Object.assign({},p,{suppliers:p.suppliers.map(function(s){if(s.id!==sid)return s;var l=newLot(1,0);return Object.assign({},s,{lots:s.lots.concat([l])});})});});}
+  function updPLot(path,pid,sid,lid,f,v){updProc(path,pid,function(p){return Object.assign({},p,{suppliers:p.suppliers.map(function(s){if(s.id!==sid)return s;return Object.assign({},s,{lots:s.lots.map(function(l){return l.id===lid?Object.assign({},l,(function(o){o[f]=Number(v);return o;})({})):l;})});})});});}
+  function removePLot(path,pid,sid,lid){updProc(path,pid,function(p){return Object.assign({},p,{suppliers:p.suppliers.map(function(s){if(s.id!==sid)return s;var lots=s.lots.filter(function(l){return l.id!==lid;});return Object.assign({},s,{lots:lots});})});});}
 
-  function setQty(q){ updProd(selectedId,function(p){ return Object.assign({},p,{quantity:Math.max(1,Number(q)||1)}); }); }
-  function setProdName(n){ updProd(selectedId,function(p){ return Object.assign({},p,{name:n}); }); }
+  function setQty(q){updProd(selectedId,function(p){return Object.assign({},p,{quantity:Math.max(1,Number(q)||1)});});}
+  function setProdName(n){updProd(selectedId,function(p){return Object.assign({},p,{name:n});});}
   function addProduct(){
     var id='PRD-'+String(products.length+1).padStart(3,'0');
-    setProducts(function(prev){ return prev.concat([{id:id,name:'新規製品',quantity:1,parts:[]}]); });
-    setSelectedId(id); setShowSidebar(false);
+    setProducts(function(prev){return prev.concat([{id:id,name:'新規製品',quantity:1,parts:[]}]);});
+    setSelectedId(id);setShowSB(false);
   }
   function commitArchive(){
-    setArchives(function(prev){ return [{id:uid('ARC'),note:archiveNote.trim()||'バージョン確定',savedAt:new Date().toISOString(),overhead:overhead,products:JSON.parse(JSON.stringify(products))}].concat(prev); });
-    setArchiveNote(''); setShowArcModal(false);
+    setArchives(function(prev){return [{id:uid('ARC'),note:arcNote.trim()||'バージョン確定',savedAt:new Date().toISOString(),overhead:overhead,products:JSON.parse(JSON.stringify(products))}].concat(prev);});
+    setArcNote('');setShowAM(false);
   }
   function restoreArchive(arc){
-    if(!window.confirm('「'+arc.note+'」を復元しますか？')) return;
-    setProducts(arc.products); setOverhead(arc.overhead||15);
-    setSelectedId(arc.products[0]?arc.products[0].id:null); setTab('bom');
+    if(!window.confirm('「'+arc.note+'」を復元しますか？'))return;
+    setProducts(arc.products);setOverhead(arc.overhead||15);
+    setSelectedId(arc.products[0]?arc.products[0].id:null);setTab('bom');
   }
-  function deleteArchive(id){ if(!window.confirm('削除しますか？')) return; setArchives(function(prev){ return prev.filter(function(a){ return a.id!==id; }); }); }
+  function deleteArchive(id){if(!window.confirm('削除しますか？'))return;setArchives(function(prev){return prev.filter(function(a){return a.id!==id;});});}
 
-  function mkCb(path){ return {
-    onRename:function(n){renamePart(path,n);},
-    onRemove:function(){removePart(path);},
-    onAddChild:function(){addChild(path);},
+  function mkCb(path){return {
+    onRename:function(n){renamePart(path,n);},onRemove:function(){removePart(path);},onAddChild:function(){addChild(path);},
     onAddMat:function(){addMat(path);},
     onRemoveMat:function(mid){removeMat(path,mid);},
     onSetMF:function(mid,f,v){setMF(path,mid,f,v);},
-    onSelML:function(mid,lid){selML(path,mid,lid);},
-    onAddML:function(mid){addML(path,mid);},
-    onUpdML:function(mid,lid,f,v){updML(path,mid,lid,f,v);},
-    onRemoveML:function(mid,lid){removeML(path,mid,lid);},
+    onSelMSup:function(mid,sid){selMSup(path,mid,sid);},
+    onSelMLot:function(mid,lid){selMLot(path,mid,lid);},
+    onAddMSup:function(mid){addMSup(path,mid);},
+    onUpdMSup:function(mid,sid,f,v){updMSup(path,mid,sid,f,v);},
+    onRemoveMSup:function(mid,sid){removeMSup(path,mid,sid);},
+    onAddMLot:function(mid,sid){addMLot(path,mid,sid);},
+    onUpdMLot:function(mid,sid,lid,f,v){updMLot(path,mid,sid,lid,f,v);},
+    onRemoveMLot:function(mid,sid,lid){removeMLot(path,mid,sid,lid);},
     onAddProc:function(){addProc(path);},
     onRemoveProc:function(pid){removeProc(path,pid);},
     onSetPF:function(pid,f,v){setPF(path,pid,f,v);},
-    onSelPL:function(pid,lid){selPL(path,pid,lid);},
-    onAddPL:function(pid){addPL(path,pid);},
-    onUpdPL:function(pid,lid,f,v){updPL(path,pid,lid,f,v);},
-    onRemovePL:function(pid,lid){removePL(path,pid,lid);},
+    onSelPSup:function(pid,sid){selPSup(path,pid,sid);},
+    onSelPLot:function(pid,lid){selPLot(path,pid,lid);},
+    onAddPSup:function(pid){addPSup(path,pid);},
+    onUpdPSup:function(pid,sid,f,v){updPSup(path,pid,sid,f,v);},
+    onRemovePSup:function(pid,sid){removePSup(path,pid,sid);},
+    onAddPLot:function(pid,sid){addPLot(path,pid,sid);},
+    onUpdPLot:function(pid,sid,lid,f,v){updPLot(path,pid,sid,lid,f,v);},
+    onRemovePLot:function(pid,sid,lid){removePLot(path,pid,sid,lid);},
   };}
 
-  var selected = products.filter(function(p){return p.id===selectedId;})[0];
-  var c = selected ? productCost(selected) : null;
-  var ohAmt = c ? c.total*overhead/100 : 0;
-  var grand = c ? c.total+ohAmt : 0;
+  var selected=products.filter(function(p){return p.id===selectedId;})[0];
+  var c=selected?productCost(selected):null;
+  var ohAmt=c?c.total*overhead/100:0;
+  var grand=c?c.total+ohAmt:0;
 
   return (
     <div style={{minHeight:'100vh',display:'flex',flexDirection:'column'}}>
@@ -314,52 +356,44 @@ function App(){
       <div style={{background:'linear-gradient(135deg,#1a1f2e,#0d1117)',borderBottom:'1px solid #2d3748',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',height:52,padding:'0 10px',gap:6}}>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <button onClick={function(){setShowSidebar(function(v){return !v;});}}
+            <button onClick={function(){setShowSB(function(v){return !v;});}}
               style={{width:32,height:32,borderRadius:7,background:'#1e2533',border:'1px solid #2d3748',color:'#94a3b8',cursor:'pointer',fontSize:15,flexShrink:0}}>☰</button>
-            <div>
-              <div style={{fontWeight:700,fontSize:13,color:'#f1f5f9'}}>BOM COST</div>
-              <div style={{fontSize:9,color:'#64748b'}}>製造原価集計</div>
-            </div>
+            <div><div style={{fontWeight:700,fontSize:13,color:'#f1f5f9'}}>BOM COST</div><div style={{fontSize:9,color:'#64748b'}}>製造原価集計</div></div>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:5}}>
-            <button onClick={function(){exportXL(products,overhead);}}
-              style={{padding:'5px 9px',background:'#14532d',border:'1px solid #16a34a',borderRadius:7,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📊 Excel</button>
-            <button onClick={function(){setShowArcModal(true);}}
-              style={{padding:'5px 9px',background:'#1e2d4a',border:'1px solid #3b82f6',borderRadius:7,color:'#60a5fa',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📦 保存</button>
+            <button onClick={function(){exportXL(products,overhead);}} style={{padding:'5px 9px',background:'#14532d',border:'1px solid #16a34a',borderRadius:7,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📊 Excel</button>
+            <button onClick={function(){setShowAM(true);}} style={{padding:'5px 9px',background:'#1e2d4a',border:'1px solid #3b82f6',borderRadius:7,color:'#60a5fa',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📦 保存</button>
             <div style={{display:'flex',alignItems:'center',gap:3,background:'#1e2533',padding:'4px 8px',borderRadius:7,border:'1px solid #2d3748'}}>
               <span style={{fontSize:10,color:'#94a3b8'}}>間接費</span>
-              <input type="number" value={overhead} min={0} max={100}
-                onChange={function(e){setOverhead(Number(e.target.value));}}
-                style={{width:32,background:'transparent',border:'none',color:'#60a5fa',fontWeight:700,fontSize:13,textAlign:'right',outline:'none'}}/>
+              <input type="number" value={overhead} min={0} max={100} onChange={function(e){setOverhead(Number(e.target.value));}} style={{width:32,background:'transparent',border:'none',color:'#60a5fa',fontWeight:700,fontSize:13,textAlign:'right',outline:'none'}}/>
               <span style={{fontSize:10,color:'#94a3b8'}}>%</span>
             </div>
           </div>
         </div>
         <div style={{display:'flex',padding:'0 10px',borderTop:'1px solid #1e2533'}}>
-          {[{id:'bom',label:'BOM編集'},{id:'archive',label:'アーカイブ('+archives.length+')'}].map(function(t){
-            return <button key={t.id} onClick={function(){setTab(t.id);}}
-              style={{padding:'8px 14px',border:'none',background:'transparent',cursor:'pointer',color:tab===t.id?'#60a5fa':'#64748b',borderBottom:tab===t.id?'2px solid #3b82f6':'2px solid transparent',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>{t.label}</button>;
+          {[{id:'bom',label:'BOM編集'},{id:'supplier',label:'サプライヤ集計'},{id:'archive',label:'アーカイブ('+archives.length+')'}].map(function(t){
+            return <button key={t.id} onClick={function(){setTab(t.id);}} style={{padding:'8px 14px',border:'none',background:'transparent',cursor:'pointer',color:tab===t.id?'#60a5fa':'#64748b',borderBottom:tab===t.id?'2px solid #3b82f6':'2px solid transparent',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>{t.label}</button>;
           })}
         </div>
       </div>
 
       {/* 製品ドロワー */}
-      {showSidebar && (
+      {showSB && (
         <div style={{position:'fixed',inset:0,zIndex:50,display:'flex'}}>
           <div style={{background:'#1a1f2e',width:256,maxWidth:'80vw',borderRight:'1px solid #2d3748',display:'flex',flexDirection:'column',overflowY:'auto'}}>
             <div style={{padding:'12px 14px',borderBottom:'1px solid #2d3748',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <span style={{fontSize:12,fontWeight:700,color:'#94a3b8'}}>製品一覧</span>
               <div style={{display:'flex',gap:6}}>
                 <button onClick={addProduct} style={{width:22,height:22,borderRadius:5,background:'#1d4ed8',border:'none',color:'#fff',cursor:'pointer',fontSize:14,lineHeight:'20px'}}>＋</button>
-                <button onClick={function(){setShowSidebar(false);}} style={{width:22,height:22,borderRadius:5,background:'#2d3748',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:12}}>✕</button>
+                <button onClick={function(){setShowSB(false);}} style={{width:22,height:22,borderRadius:5,background:'#2d3748',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:12}}>✕</button>
               </div>
             </div>
             {products.map(function(p){
-              var pc=productCost(p), sel=p.id===selectedId;
-              return <div key={p.id} onClick={function(){setSelectedId(p.id);setShowSidebar(false);}}
+              var pc=productCost(p),sel=p.id===selectedId;
+              return <div key={p.id} onClick={function(){setSelectedId(p.id);setShowSB(false);}}
                 style={{padding:'10px 14px',cursor:'pointer',borderLeft:'3px solid '+(sel?'#3b82f6':'transparent'),borderBottom:'1px solid #1e2533',background:sel?'#1e2d4a':'transparent'}}>
                 <div style={{fontFamily:'monospace',fontSize:10,color:'#60a5fa'}}>{p.id}</div>
-                <div style={{fontWeight:600,color:'#e2e8f0',marginTop:1,fontSize:13}}>{p.name}</div>
+                <div style={{fontWeight:600,color:'#e2e8f0',fontSize:13}}>{p.name}</div>
                 <div style={{display:'flex',justifyContent:'space-between',marginTop:3}}>
                   <span style={{fontSize:10,color:'#64748b'}}>×{p.quantity}台</span>
                   <span style={{fontSize:11,color:'#8b5cf6',fontWeight:700}}>{fmt(pc.total)}</span>
@@ -367,7 +401,7 @@ function App(){
               </div>;
             })}
           </div>
-          <div style={{flex:1,background:'rgba(0,0,0,0.5)'}} onClick={function(){setShowSidebar(false);}}/>
+          <div style={{flex:1,background:'rgba(0,0,0,0.5)'}} onClick={function(){setShowSB(false);}}/>
         </div>
       )}
 
@@ -393,12 +427,7 @@ function App(){
                 </div>
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:8}}>
-                {[
-                  {l:'材料費/台',v:fmt(c.mat),col:'#10b981'},
-                  {l:'加工費/台',v:fmt(c.proc),col:'#f59e0b'},
-                  {l:'台あたり原価',v:fmt(c.unit),col:'#3b82f6'},
-                  {l:'ロット原価×'+selected.quantity,v:fmt(c.total),col:'#8b5cf6'},
-                ].map(function(s){
+                {[{l:'材料費/台',v:fmt(c.mat),col:'#10b981'},{l:'加工費/台',v:fmt(c.proc),col:'#f59e0b'},{l:'台あたり原価',v:fmt(c.unit),col:'#3b82f6'},{l:'ロット原価×'+selected.quantity,v:fmt(c.total),col:'#8b5cf6'}].map(function(s){
                   return <div key={s.l} style={{background:'#0f1117',border:'1px solid #2d3748',borderRadius:7,padding:'7px 10px'}}>
                     <div style={{fontSize:10,color:'#64748b'}}>{s.l}</div>
                     <div style={{fontSize:14,fontWeight:700,color:s.col,marginTop:2}}>{s.v}</div>
@@ -406,73 +435,61 @@ function App(){
                 })}
               </div>
               <div style={{paddingTop:7,borderTop:'1px solid #2d3748',display:'flex',alignItems:'center',flexWrap:'wrap',gap:4,fontSize:11}}>
-                <span style={{color:'#94a3b8'}}>{fmt(c.total)}</span>
-                <span style={{color:'#475569'}}>＋ 間接費{overhead}% {fmt(ohAmt)}</span>
-                <span style={{color:'#475569'}}>＝</span>
-                <span style={{color:'#f1f5f9',fontWeight:800,fontSize:14}}>{fmt(grand)}</span>
+                <span style={{color:'#94a3b8'}}>{fmt(c.total)}</span><span style={{color:'#475569'}}>＋ 間接費{overhead}% {fmt(ohAmt)}</span>
+                <span style={{color:'#475569'}}>＝</span><span style={{color:'#f1f5f9',fontWeight:800,fontSize:14}}>{fmt(grand)}</span>
               </div>
             </div>
-
             {selected.parts.map(function(pt,i){
               return <PartNode key={pt.id} part={pt} path={[i]} depth={0} cb={mkCb([i])} mkCb={mkCb}/>;
             })}
-            <button onClick={addRoot}
-              style={{width:'100%',padding:10,background:'#161b29',border:'1px dashed #3b82f6',borderRadius:10,color:'#60a5fa',fontWeight:700,fontSize:12,cursor:'pointer',marginTop:4}}>
-              ＋ 部品を追加
-            </button>
+            <button onClick={addRoot} style={{width:'100%',padding:10,background:'#161b29',border:'1px dashed #3b82f6',borderRadius:10,color:'#60a5fa',fontWeight:700,fontSize:12,cursor:'pointer',marginTop:4}}>＋ 部品を追加</button>
           </div>
+        )}
+
+        {tab==='supplier' && (
+          <SupplierView products={products} overhead={overhead} exportXL={exportXL}/>
         )}
 
         {tab==='archive' && (
           <div>
-            {archives.length===0 ? (
-              <div style={{textAlign:'center',padding:'60px 20px',color:'#475569'}}>
-                <div style={{fontSize:36,marginBottom:12}}>📦</div>
-                <div style={{fontSize:13,fontWeight:600,color:'#64748b'}}>アーカイブがありません</div>
-              </div>
-            ) : archives.map(function(arc){
-              var tot=arc.products.reduce(function(s,p){return s+productCost(p).total;},0);
-              var g=tot*(1+(arc.overhead||15)/100);
-              return <div key={arc.id} style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,overflow:'hidden',marginBottom:10}}>
-                <div style={{padding:'10px 12px',display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontWeight:700,color:'#f1f5f9',fontSize:13}}>{arc.note}</div>
-                    <div style={{fontSize:10,color:'#64748b',marginTop:2}}>🕐 {fmtDate(arc.savedAt)}</div>
-                    <div style={{fontSize:13,color:'#8b5cf6',fontWeight:800,marginTop:3}}>{fmt(g)}</div>
-                  </div>
-                  <div style={{display:'flex',flexDirection:'column',gap:4}}>
-                    <button onClick={function(){restoreArchive(arc);}} style={{padding:'4px 10px',background:'#1e3a5f',border:'1px solid #3b82f6',borderRadius:6,color:'#60a5fa',fontWeight:700,fontSize:11,cursor:'pointer'}}>復元</button>
-                    <button onClick={function(){exportXL(arc.products,arc.overhead||15);}} style={{padding:'4px 10px',background:'#14532d',border:'1px solid #16a34a',borderRadius:6,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer'}}>Excel</button>
-                    <button onClick={function(){deleteArchive(arc.id);}} style={{padding:'4px 10px',background:'#3a1a1a',border:'1px solid #7f1d1d',borderRadius:6,color:'#f87171',fontWeight:700,fontSize:11,cursor:'pointer'}}>削除</button>
-                  </div>
-                </div>
-              </div>;
-            })}
+            {archives.length===0
+              ? <div style={{textAlign:'center',padding:'60px 20px',color:'#475569'}}><div style={{fontSize:36,marginBottom:12}}>📦</div><div style={{fontSize:13,fontWeight:600,color:'#64748b'}}>アーカイブがありません</div></div>
+              : archives.map(function(arc){
+                  var tot=arc.products.reduce(function(s,p){return s+productCost(p).total;},0),g=tot*(1+(arc.overhead||15)/100);
+                  return <div key={arc.id} style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,overflow:'hidden',marginBottom:10}}>
+                    <div style={{padding:'10px 12px',display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:700,color:'#f1f5f9',fontSize:13}}>{arc.note}</div>
+                        <div style={{fontSize:10,color:'#64748b',marginTop:2}}>🕐 {fmtDate(arc.savedAt)}</div>
+                        <div style={{fontSize:13,color:'#8b5cf6',fontWeight:800,marginTop:3}}>{fmt(g)}</div>
+                      </div>
+                      <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                        <button onClick={function(){restoreArchive(arc);}} style={{padding:'4px 10px',background:'#1e3a5f',border:'1px solid #3b82f6',borderRadius:6,color:'#60a5fa',fontWeight:700,fontSize:11,cursor:'pointer'}}>復元</button>
+                        <button onClick={function(){exportXL(arc.products,arc.overhead||15);}} style={{padding:'4px 10px',background:'#14532d',border:'1px solid #16a34a',borderRadius:6,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer'}}>Excel</button>
+                        <button onClick={function(){deleteArchive(arc.id);}} style={{padding:'4px 10px',background:'#3a1a1a',border:'1px solid #7f1d1d',borderRadius:6,color:'#f87171',fontWeight:700,fontSize:11,cursor:'pointer'}}>削除</button>
+                      </div>
+                    </div>
+                  </div>;
+                })
+            }
           </div>
         )}
       </div>
 
       {/* アーカイブモーダル */}
-      {showArcModal && (
+      {showAM && (
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100,padding:14}}>
           <div style={{background:'#1a1f2e',border:'1px solid #3b82f6',borderRadius:14,padding:18,width:'100%',maxWidth:400}}>
             <div style={{fontWeight:700,fontSize:14,color:'#f1f5f9',marginBottom:10}}>📦 バージョンを保存</div>
             <div style={{background:'#0f1117',borderRadius:8,padding:'10px 12px',marginBottom:12}}>
-              {products.map(function(p){ var pc=productCost(p); return <div key={p.id} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:'1px solid #1e2533'}}>
-                <span style={{fontSize:12,color:'#e2e8f0'}}>{p.name}</span>
-                <span style={{fontSize:12,color:'#8b5cf6',fontWeight:700}}>{fmt(pc.total)}</span>
-              </div>; })}
-              <div style={{display:'flex',justifyContent:'space-between',marginTop:7}}>
-                <span style={{fontSize:11,color:'#64748b'}}>間接費({overhead}%)込み総額</span>
-                <span style={{fontSize:13,color:'#f1f5f9',fontWeight:800}}>{fmt(products.reduce(function(s,p){return s+productCost(p).total;},0)*(1+overhead/100))}</span>
-              </div>
+              {products.map(function(p){var pc=productCost(p);return <div key={p.id} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:'1px solid #1e2533'}}><span style={{fontSize:12,color:'#e2e8f0'}}>{p.name}</span><span style={{fontSize:12,color:'#8b5cf6',fontWeight:700}}>{fmt(pc.total)}</span></div>;})}
+              <div style={{display:'flex',justifyContent:'space-between',marginTop:7}}><span style={{fontSize:11,color:'#64748b'}}>間接費({overhead}%)込み総額</span><span style={{fontSize:13,color:'#f1f5f9',fontWeight:800}}>{fmt(products.reduce(function(s,p){return s+productCost(p).total;},0)*(1+overhead/100))}</span></div>
             </div>
-            <input value={archiveNote} onChange={function(e){setArchiveNote(e.target.value);}}
-              placeholder="メモ（例：1次見積確定）" autoFocus
+            <input value={arcNote} onChange={function(e){setArcNote(e.target.value);}} placeholder="メモ（例：1次見積確定）" autoFocus
               onKeyDown={function(e){if(e.key==='Enter')commitArchive();}}
               style={{width:'100%',background:'#0f1117',border:'1px solid #3b82f6',borderRadius:7,color:'#e2e8f0',padding:'8px 10px',fontSize:13,outline:'none',marginBottom:12}}/>
             <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-              <button onClick={function(){setShowArcModal(false);}} style={{padding:'7px 14px',background:'#2d3748',border:'none',borderRadius:7,color:'#94a3b8',fontWeight:600,cursor:'pointer',fontSize:12}}>キャンセル</button>
+              <button onClick={function(){setShowAM(false);}} style={{padding:'7px 14px',background:'#2d3748',border:'none',borderRadius:7,color:'#94a3b8',fontWeight:600,cursor:'pointer',fontSize:12}}>キャンセル</button>
               <button onClick={commitArchive} style={{padding:'7px 18px',background:'#1d4ed8',border:'none',borderRadius:7,color:'#fff',fontWeight:700,fontSize:12,cursor:'pointer'}}>保存する</button>
             </div>
           </div>
@@ -484,57 +501,53 @@ function App(){
 
 // ========== PartNode ==========
 function PartNode(props){
-  var part=props.part, path=props.path, depth=props.depth, cb=props.cb, mkCb=props.mkCb;
-  var cs = useState(false); var collapsed=cs[0], setCollapsed=cs[1];
-  var cost = partCost(part);
-  var colors = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981'];
-  var dc = colors[depth % colors.length];
-  var indent = Math.min(depth*12, 36);
-
+  var part=props.part,path=props.path,depth=props.depth,cb=props.cb,mkCb=props.mkCb;
+  var cs=React_useState(false);var collapsed=cs[0],setCollapsed=cs[1];
+  var cost=partCost(part);
+  var colors=['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981'];
+  var dc=colors[depth%colors.length];
+  var indent=Math.min(depth*12,36);
   return (
     <div style={{marginLeft:indent,marginBottom:8}}>
       <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderLeft:'3px solid '+dc,borderRadius:10,overflow:'hidden'}}>
         <div style={{background:'#161b29',borderBottom:'1px solid #2d3748',padding:'7px 10px'}}>
           <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:5}}>
-            <button onClick={function(){setCollapsed(function(v){return !v;});}}
-              style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #2d3748',color:'#64748b',cursor:'pointer',fontSize:8,flexShrink:0}}>
-              {collapsed?'▶':'▼'}
-            </button>
-            {depth>0 && <span style={{fontSize:9,color:dc,fontFamily:'monospace',fontWeight:700,flexShrink:0}}>L{depth}</span>}
-            <input value={part.name} onChange={function(e){cb.onRename(e.target.value);}}
-              placeholder="部品名を入力"
+            <button onClick={function(){setCollapsed(function(v){return !v;});}} style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #2d3748',color:'#64748b',cursor:'pointer',fontSize:8,flexShrink:0}}>{collapsed?'▶':'▼'}</button>
+            {depth>0&&<span style={{fontSize:9,color:dc,fontFamily:'monospace',fontWeight:700,flexShrink:0}}>L{depth}</span>}
+            <input value={part.name} onChange={function(e){cb.onRename(e.target.value);}} placeholder="部品名"
               style={{flex:1,minWidth:0,background:'#0f1117',border:'1px solid #2d3748',borderRadius:5,color:'#f1f5f9',fontSize:12,fontWeight:700,padding:'3px 7px',outline:'none'}}/>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
             <span style={{fontSize:10,color:'#10b981'}}>材 {fmt(cost.mat)}</span>
             <span style={{fontSize:10,color:'#f59e0b'}}>加 {fmt(cost.proc)}</span>
-            {cost.sub>0 && <span style={{fontSize:10,color:'#8b5cf6'}}>子 {fmt(cost.sub)}</span>}
+            {cost.sub>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>子 {fmt(cost.sub)}</span>}
             <span style={{fontSize:11,color:'#e2e8f0',fontWeight:700,marginRight:'auto'}}>{fmt(cost.total)}</span>
-            <button onClick={cb.onAddChild}
-              style={{padding:'2px 7px',background:'#1e2d4a',border:'1px solid '+dc+'66',borderRadius:4,color:dc,fontSize:10,fontWeight:700,cursor:'pointer'}}>＋子</button>
-            <button onClick={cb.onRemove}
-              style={{width:20,height:20,borderRadius:4,background:'#3a1a1a',border:'1px solid #7f1d1d',color:'#f87171',cursor:'pointer',fontSize:10,flexShrink:0}}>✕</button>
+            <button onClick={cb.onAddChild} style={{padding:'2px 7px',background:'#1e2d4a',border:'1px solid '+dc+'66',borderRadius:4,color:dc,fontSize:10,fontWeight:700,cursor:'pointer'}}>＋子</button>
+            <button onClick={cb.onRemove} style={{width:20,height:20,borderRadius:4,background:'#3a1a1a',border:'1px solid #7f1d1d',color:'#f87171',cursor:'pointer',fontSize:10,flexShrink:0}}>✕</button>
           </div>
         </div>
-
-        {!collapsed && (
+        {!collapsed&&(
           <div>
             {/* 材料 */}
             <div style={{borderBottom:'1px solid #2d3748'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 10px'}}>
                 <span style={{fontSize:9,fontWeight:700,color:'#10b981',padding:'1px 6px',borderRadius:3,background:'#064e3b'}}>材料費</span>
-                <button onClick={cb.onAddMat} style={{fontSize:10,fontWeight:700,background:'transparent',border:'1px solid #10b98155',borderRadius:3,padding:'1px 7px',cursor:'pointer',color:'#10b981'}}>＋</button>
+                <button onClick={cb.onAddMat} style={{fontSize:10,fontWeight:700,background:'transparent',border:'1px solid #10b98155',borderRadius:3,padding:'1px 7px',cursor:'pointer',color:'#10b981'}}>＋追加</button>
               </div>
               {part.materials.length===0
-                ? <div style={{padding:'8px',textAlign:'center',color:'#475569',fontSize:10}}>材料がありません</div>
-                : part.materials.map(function(m){
-                    return <MatRow key={m.id} row={m}
-                      onRemove={function(){cb.onRemoveMat(m.id);}}
+                ?<div style={{padding:'8px',textAlign:'center',color:'#475569',fontSize:10}}>材料がありません</div>
+                :part.materials.map(function(m){
+                    return <ItemRow key={m.id} row={m} color='#10b981' type='mat'
+                      onRemoveRow={function(){cb.onRemoveMat(m.id);}}
                       onSetField={function(f,v){cb.onSetMF(m.id,f,v);}}
-                      onSelLot={function(lid){cb.onSelML(m.id,lid);}}
-                      onAddLot={function(){cb.onAddML(m.id);}}
-                      onUpdLot={function(lid,f,v){cb.onUpdML(m.id,lid,f,v);}}
-                      onRemoveLot={function(lid){cb.onRemoveML(m.id,lid);}}/>;
+                      onSelSup={function(sid){cb.onSelMSup(m.id,sid);}}
+                      onSelLot={function(lid){cb.onSelMLot(m.id,lid);}}
+                      onAddSup={function(){cb.onAddMSup(m.id);}}
+                      onUpdSup={function(sid,f,v){cb.onUpdMSup(m.id,sid,f,v);}}
+                      onRemoveSup={function(sid){cb.onRemoveMSup(m.id,sid);}}
+                      onAddLot={function(sid){cb.onAddMLot(m.id,sid);}}
+                      onUpdLot={function(sid,lid,f,v){cb.onUpdMLot(m.id,sid,lid,f,v);}}
+                      onRemoveLot={function(sid,lid){cb.onRemoveMLot(m.id,sid,lid);}}/>;
                   })
               }
             </div>
@@ -542,155 +555,309 @@ function PartNode(props){
             <div>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 10px'}}>
                 <span style={{fontSize:9,fontWeight:700,color:'#f59e0b',padding:'1px 6px',borderRadius:3,background:'#431407'}}>加工費</span>
-                <button onClick={cb.onAddProc} style={{fontSize:10,fontWeight:700,background:'transparent',border:'1px solid #f59e0b55',borderRadius:3,padding:'1px 7px',cursor:'pointer',color:'#f59e0b'}}>＋</button>
+                <button onClick={cb.onAddProc} style={{fontSize:10,fontWeight:700,background:'transparent',border:'1px solid #f59e0b55',borderRadius:3,padding:'1px 7px',cursor:'pointer',color:'#f59e0b'}}>＋追加</button>
               </div>
               {part.processes.length===0
-                ? <div style={{padding:'8px',textAlign:'center',color:'#475569',fontSize:10}}>加工工程がありません</div>
-                : part.processes.map(function(p){
-                    return <ProcRow key={p.id} row={p}
-                      onRemove={function(){cb.onRemoveProc(p.id);}}
+                ?<div style={{padding:'8px',textAlign:'center',color:'#475569',fontSize:10}}>加工工程がありません</div>
+                :part.processes.map(function(p){
+                    return <ItemRow key={p.id} row={p} color='#f59e0b' type='proc'
+                      onRemoveRow={function(){cb.onRemoveProc(p.id);}}
                       onSetField={function(f,v){cb.onSetPF(p.id,f,v);}}
-                      onSelLot={function(lid){cb.onSelPL(p.id,lid);}}
-                      onAddLot={function(){cb.onAddPL(p.id);}}
-                      onUpdLot={function(lid,f,v){cb.onUpdPL(p.id,lid,f,v);}}
-                      onRemoveLot={function(lid){cb.onRemovePL(p.id,lid);}}/>;
+                      onSelSup={function(sid){cb.onSelPSup(p.id,sid);}}
+                      onSelLot={function(lid){cb.onSelPLot(p.id,lid);}}
+                      onAddSup={function(){cb.onAddPSup(p.id);}}
+                      onUpdSup={function(sid,f,v){cb.onUpdPSup(p.id,sid,f,v);}}
+                      onRemoveSup={function(sid){cb.onRemovePSup(p.id,sid);}}
+                      onAddLot={function(sid){cb.onAddPLot(p.id,sid);}}
+                      onUpdLot={function(sid,lid,f,v){cb.onUpdPLot(p.id,sid,lid,f,v);}}
+                      onRemoveLot={function(sid,lid){cb.onRemovePLot(p.id,sid,lid);}}/>;
                   })
               }
             </div>
           </div>
         )}
       </div>
-
-      {!collapsed && part.children.map(function(child,ci){
-        var np = depth===0 ? [path[0],ci] : path.concat([ci]);
+      {!collapsed&&part.children.map(function(child,ci){
+        var np=depth===0?[path[0],ci]:path.concat([ci]);
         return <PartNode key={child.id} part={child} path={np} depth={depth+1} cb={mkCb(np)} mkCb={mkCb}/>;
       })}
     </div>
   );
 }
 
-// ========== 材料行 ==========
-function MatRow(props){
-  var row=props.row;
-  var os=useState(false); var open=os[0], setOpen=os[1];
-  var selLot = getSelLot(row);
-  var uc = getUnitCost(row);
+// ========== ItemRow（材料・加工共通） ==========
+function ItemRow(props){
+  var row=props.row,color=props.color,type=props.type;
+  var os=React_useState(false);var open=os[0],setOpen=os[1];
+  var selSup=getSelSupplier(row);
+  var selLot=getSelLot(row);
+  var uc=getUnitCost(row);
+  var isMat=type==='mat';
   return (
     <div style={{borderBottom:'1px solid #1e2533'}}>
       {/* メイン行 */}
       <div style={{display:'flex',alignItems:'center',gap:4,padding:'4px 8px',flexWrap:'wrap'}}>
-        <button onClick={props.onRemove}
-          style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #3a2530',color:'#94556a',cursor:'pointer',fontSize:9,flexShrink:0}}>✕</button>
-        <input value={row.name} onChange={function(e){props.onSetField('name',e.target.value);}}
-          placeholder="材料名"
+        <button onClick={props.onRemoveRow} style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #3a2530',color:'#94556a',cursor:'pointer',fontSize:9,flexShrink:0}}>✕</button>
+        <input value={row.name} onChange={function(e){props.onSetField('name',e.target.value);}} placeholder={isMat?'材料名':'工程名'}
           style={{flex:'1 1 80px',minWidth:60,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 5px',fontSize:11,outline:'none'}}/>
-        <input value={row.unit} onChange={function(e){props.onSetField('unit',e.target.value);}}
-          style={{width:36,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 4px',fontSize:11,outline:'none',textAlign:'center'}}/>
-        <input type="number" value={row.qty} onChange={function(e){props.onSetField('qty',e.target.value);}}
+        {isMat&&<input value={row.unit} onChange={function(e){props.onSetField('unit',e.target.value);}}
+          style={{width:36,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 4px',fontSize:11,outline:'none',textAlign:'center'}}/>}
+        <input type="number" value={row.qty} onChange={function(e){props.onSetField('qty',e.target.value);}} placeholder={isMat?'数量':'工数'}
           style={{width:48,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 4px',fontSize:11,outline:'none',textAlign:'right'}}/>
-        {/* ロット選択ドロップダウン */}
-        <select value={row.selectedLotId||(row.lots[0]?row.lots[0].id:'')}
-          onChange={function(e){props.onSelLot(e.target.value);}}
-          style={{background:'#0f1117',border:'1px solid #10b98155',borderRadius:4,color:'#10b981',padding:'2px 4px',fontSize:10,cursor:'pointer',outline:'none',maxWidth:130}}>
-          {row.lots.map(function(l){ return <option key={l.id} value={l.id}>{l.name}（{fmt(l.unitCost)}）</option>; })}
+        {/* サプライヤ選択 */}
+        <select value={row.selectedSupplierId||(selSup?selSup.id:'')} onChange={function(e){props.onSelSup(e.target.value);}}
+          style={{background:'#1a1f2e',border:'1px solid '+color+'55',borderRadius:4,color:color,padding:'2px 4px',fontSize:10,cursor:'pointer',outline:'none',maxWidth:110,minWidth:70,fontWeight:700}}>
+          {row.suppliers.map(function(s){return <option key={s.id} value={s.id}>{s.name}</option>;})}
         </select>
-        <span style={{fontSize:10,color:'#475569',whiteSpace:'nowrap'}}>{fmt(uc)}/個</span>
-        <span style={{fontSize:11,color:'#10b981',fontWeight:700,whiteSpace:'nowrap',marginLeft:'auto'}}>{fmt(rowCost(row))}</span>
-        {/* ロット編集ボタン */}
+        {/* ロット選択 */}
+        {selSup&&selSup.lots.length>0&&(
+          <select value={row.selectedLotId||(selLot?selLot.id:'')} onChange={function(e){props.onSelLot(e.target.value);}}
+            style={{background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#94a3b8',padding:'2px 4px',fontSize:10,cursor:'pointer',outline:'none',maxWidth:110,minWidth:60}}>
+            {selSup.lots.map(function(l){return <option key={l.id} value={l.id}>{l.lotQty}個 {fmt(l.unitCost)}</option>;})}
+          </select>
+        )}
+        <span style={{fontSize:10,color:'#475569',whiteSpace:'nowrap'}}>{fmt(uc)}/{isMat?'個':'工程'}</span>
+        <span style={{fontSize:11,color:color,fontWeight:700,whiteSpace:'nowrap',marginLeft:'auto'}}>{fmt(rowCost(row))}</span>
         <button onClick={function(){setOpen(function(v){return !v;});}}
-          style={{padding:'2px 6px',background:open?'#064e3b':'transparent',border:'1px solid #10b98144',borderRadius:4,color:'#10b981',fontSize:9,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
-          ロット設定
+          style={{padding:'2px 6px',background:open?'#1e2533':'transparent',border:'1px solid '+color+'44',borderRadius:4,color:color,fontSize:9,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
+          {open?'▲':'▼'}設定
         </button>
       </div>
-      {/* ロット設定パネル */}
-      {open && <LotPanel lots={row.lots} selectedLotId={row.selectedLotId} color="#10b981"
-        onSelLot={props.onSelLot} onAddLot={props.onAddLot}
-        onUpdLot={props.onUpdLot} onRemoveLot={props.onRemoveLot}/>}
-    </div>
-  );
-}
 
-// ========== 加工行 ==========
-function ProcRow(props){
-  var row=props.row;
-  var os=useState(false); var open=os[0], setOpen=os[1];
-  var selLot = getSelLot(row);
-  var uc = getUnitCost(row);
-  return (
-    <div style={{borderBottom:'1px solid #1e2533'}}>
-      <div style={{display:'flex',alignItems:'center',gap:4,padding:'4px 8px',flexWrap:'wrap'}}>
-        <button onClick={props.onRemove}
-          style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #3a2530',color:'#94556a',cursor:'pointer',fontSize:9,flexShrink:0}}>✕</button>
-        <input value={row.name} onChange={function(e){props.onSetField('name',e.target.value);}}
-          placeholder="工程名"
-          style={{flex:'1 1 80px',minWidth:60,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 5px',fontSize:11,outline:'none'}}/>
-        <input type="number" value={row.qty} onChange={function(e){props.onSetField('qty',e.target.value);}}
-          placeholder="工数"
-          style={{width:48,background:'#0f1117',border:'1px solid #2d3748',borderRadius:4,color:'#e2e8f0',padding:'3px 4px',fontSize:11,outline:'none',textAlign:'right'}}/>
-        <select value={row.selectedLotId||(row.lots[0]?row.lots[0].id:'')}
-          onChange={function(e){props.onSelLot(e.target.value);}}
-          style={{background:'#0f1117',border:'1px solid #f59e0b55',borderRadius:4,color:'#f59e0b',padding:'2px 4px',fontSize:10,cursor:'pointer',outline:'none',maxWidth:130}}>
-          {row.lots.map(function(l){ return <option key={l.id} value={l.id}>{l.name}（{fmt(l.unitCost)}）</option>; })}
-        </select>
-        <span style={{fontSize:10,color:'#475569',whiteSpace:'nowrap'}}>{fmt(uc)}/工程</span>
-        <span style={{fontSize:11,color:'#f59e0b',fontWeight:700,whiteSpace:'nowrap',marginLeft:'auto'}}>{fmt(rowCost(row))}</span>
-        <button onClick={function(){setOpen(function(v){return !v;});}}
-          style={{padding:'2px 6px',background:open?'#431407':'transparent',border:'1px solid #f59e0b44',borderRadius:4,color:'#f59e0b',fontSize:9,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
-          ロット設定
-        </button>
-      </div>
-      {open && <LotPanel lots={row.lots} selectedLotId={row.selectedLotId} color="#f59e0b"
-        onSelLot={props.onSelLot} onAddLot={props.onAddLot}
-        onUpdLot={props.onUpdLot} onRemoveLot={props.onRemoveLot}/>}
-    </div>
-  );
-}
-
-// ========== ロット設定パネル ==========
-function LotPanel(props){
-  var lots=props.lots, color=props.color;
-  var curId = props.selectedLotId || (lots[0]?lots[0].id:'');
-  return (
-    <div style={{background:'#0a0e1a',borderTop:'1px solid #2d3748',padding:'10px 12px'}}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-        <span style={{fontSize:10,color:'#64748b',fontWeight:700}}>ロット別単価設定</span>
-        <button onClick={props.onAddLot}
-          style={{fontSize:10,fontWeight:700,background:'transparent',border:'1px solid '+color+'55',borderRadius:4,padding:'2px 8px',cursor:'pointer',color:color}}>
-          ＋ ロット追加
-        </button>
-      </div>
-      {lots.map(function(l){
-        var isSel = l.id === curId;
-        return (
-          <div key={l.id} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 8px',marginBottom:4,borderRadius:6,background:isSel?'#0c1d2e':'#111827',border:'1px solid '+(isSel?color+'44':'#1e2533')}}>
-            {/* 選択ラジオ */}
-            <input type="radio" name={'lot-'+lots[0].id} checked={isSel}
-              onChange={function(){props.onSelLot(l.id);}}
-              style={{accentColor:color,flexShrink:0,width:14,height:14}}/>
-            {/* ロット名 */}
-            <input value={l.name} onChange={function(e){props.onUpdLot(l.id,'name',e.target.value);}}
-              placeholder="ロット名（例：100個ロット）"
-              style={{flex:'1 1 100px',minWidth:80,background:'transparent',border:'none',borderBottom:'1px solid #2d3748',color:'#e2e8f0',padding:'2px 4px',fontSize:11,outline:'none'}}/>
-            {/* 単価 */}
-            <div style={{display:'flex',alignItems:'center',gap:3,flexShrink:0}}>
-              <span style={{fontSize:10,color:'#64748b'}}>単価 ¥</span>
-              <input type="number" value={l.unitCost} onChange={function(e){props.onUpdLot(l.id,'unitCost',e.target.value);}}
-                style={{width:72,background:'#0f1117',border:'1px solid '+(isSel?color+'66':'#2d3748'),borderRadius:4,color:isSel?color:'#e2e8f0',fontWeight:isSel?700:400,padding:'3px 6px',fontSize:12,outline:'none',textAlign:'right'}}/>
-            </div>
-            {/* 削除 */}
-            {lots.length>1 && (
-              <button onClick={function(){props.onRemoveLot(l.id);}}
-                style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #3a2530',color:'#94556a',cursor:'pointer',fontSize:9,flexShrink:0}}>✕</button>
-            )}
+      {/* サプライヤ＆ロット設定パネル */}
+      {open&&(
+        <div style={{background:'#090d18',borderTop:'1px solid #2d3748',padding:'10px 10px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+            <span style={{fontSize:10,fontWeight:700,color:'#64748b'}}>サプライヤ・ロット設定</span>
+            <button onClick={props.onAddSup} style={{fontSize:10,fontWeight:700,background:'transparent',border:'1px solid '+color+'55',borderRadius:4,padding:'2px 8px',cursor:'pointer',color:color}}>＋ サプライヤ追加</button>
           </div>
-        );
-      })}
+          {row.suppliers.map(function(sup){
+            var isSel=sup.id===row.selectedSupplierId;
+            return (
+              <div key={sup.id} style={{marginBottom:8,border:'1px solid '+(isSel?color+'55':'#1e2533'),borderRadius:7,overflow:'hidden',background:isSel?'#0c1520':'#0f1117'}}>
+                {/* サプライヤ名行 */}
+                <div style={{display:'flex',alignItems:'center',gap:6,padding:'6px 8px',borderBottom:'1px solid #1e2533'}}>
+                  <input type="radio" checked={isSel} onChange={function(){props.onSelSup(sup.id);}} style={{accentColor:color,flexShrink:0,width:14,height:14}}/>
+                  <input value={sup.name} onChange={function(e){props.onUpdSup(sup.id,'name',e.target.value);}} placeholder="サプライヤ名"
+                    style={{flex:1,background:'transparent',border:'none',borderBottom:'1px solid #2d3748',color:isSel?'#f1f5f9':'#94a3b8',fontWeight:isSel?700:400,fontSize:12,padding:'1px 4px',outline:'none'}}/>
+                  {row.suppliers.length>1&&(
+                    <button onClick={function(){props.onRemoveSup(sup.id);}} style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #3a2530',color:'#94556a',cursor:'pointer',fontSize:9,flexShrink:0}}>✕</button>
+                  )}
+                </div>
+                {/* ロット一覧 */}
+                <div style={{padding:'4px 8px 6px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                    <span style={{fontSize:9,color:'#475569'}}>ロット別単価</span>
+                    <button onClick={function(){props.onAddLot(sup.id);}} style={{fontSize:9,fontWeight:700,background:'transparent',border:'1px solid #2d3748',borderRadius:3,padding:'1px 6px',cursor:'pointer',color:'#64748b'}}>＋ロット追加</button>
+                  </div>
+                  {/* ヘッダー */}
+                  <div style={{display:'grid',gridTemplateColumns:'16px 1fr 80px 80px 20px',gap:4,padding:'2px 0',marginBottom:2}}>
+                    <span></span>
+                    <span style={{fontSize:9,color:'#475569'}}>ロット数量</span>
+                    <span style={{fontSize:9,color:'#475569',textAlign:'right'}}>単価（¥）</span>
+                    <span style={{fontSize:9,color:'#475569',textAlign:'right'}}>行金額</span>
+                    <span></span>
+                  </div>
+                  {sup.lots.map(function(lot){
+                    var isSelLot=isSel&&lot.id===row.selectedLotId;
+                    return (
+                      <div key={lot.id} style={{display:'grid',gridTemplateColumns:'16px 1fr 80px 80px 20px',gap:4,alignItems:'center',padding:'2px 0',background:isSelLot?color+'11':'transparent',borderRadius:4}}>
+                        <input type="radio" checked={isSelLot} onChange={function(){props.onSelSup(sup.id);props.onSelLot(lot.id);}} style={{accentColor:color,width:12,height:12,margin:'0 auto'}}/>
+                        {/* ロット数量（数値） */}
+                        <div style={{display:'flex',alignItems:'center',gap:3}}>
+                          <input type="number" value={lot.lotQty} onChange={function(e){props.onUpdLot(sup.id,lot.id,'lotQty',e.target.value);}}
+                            style={{width:'100%',background:'#0f1117',border:'1px solid '+(isSelLot?color+'55':'#2d3748'),borderRadius:3,color:'#e2e8f0',padding:'3px 5px',fontSize:11,outline:'none',textAlign:'right'}}/>
+                          <span style={{fontSize:9,color:'#475569',flexShrink:0}}>個</span>
+                        </div>
+                        {/* 単価 */}
+                        <input type="number" value={lot.unitCost} onChange={function(e){props.onUpdLot(sup.id,lot.id,'unitCost',e.target.value);}}
+                          style={{background:'#0f1117',border:'1px solid '+(isSelLot?color+'55':'#2d3748'),borderRadius:3,color:isSelLot?color:'#e2e8f0',fontWeight:isSelLot?700:400,padding:'3px 5px',fontSize:11,outline:'none',textAlign:'right',width:'100%'}}/>
+                        {/* 行金額プレビュー */}
+                        <span style={{fontSize:10,color:isSelLot?color:'#475569',textAlign:'right',fontWeight:isSelLot?700:400}}>{fmt(lot.unitCost*(row.qty||1))}</span>
+                        {sup.lots.length>1&&(
+                          <button onClick={function(){props.onRemoveLot(sup.id,lot.id);}} style={{width:16,height:16,borderRadius:3,background:'transparent',border:'1px solid #3a2530',color:'#94556a',cursor:'pointer',fontSize:8}}>✕</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-const root=ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(App));
+// ========== サプライヤ集計ロジック ==========
+function calcSupplierSummary(products){
+  // supName -> { name, mat:0, proc:0, total:0, items:[] }
+  var map = {};
+  function addItem(supName, type, prodName, partName, itemName, cost, qty){
+    if(!map[supName]) map[supName]={name:supName,mat:0,proc:0,total:0,items:[]};
+    var entry = map[supName];
+    if(type==='mat') entry.mat+=cost; else entry.proc+=cost;
+    entry.total+=cost;
+    entry.items.push({type:type,prodName:prodName,partName:partName,itemName:itemName,cost:cost,qty:qty});
+  }
+  function walkPart(part, prodName, depth){
+    var label = Array(depth+1).join('　')+part.name;
+    part.materials.forEach(function(m){
+      var sup=getSelSupplier(m);
+      if(sup) addItem(sup.name,'mat',prodName,label,m.name,rowCost(m),m.qty);
+    });
+    part.processes.forEach(function(p){
+      var sup=getSelSupplier(p);
+      if(sup) addItem(sup.name,'proc',prodName,label,p.name,rowCost(p),p.qty);
+    });
+    part.children.forEach(function(c){walkPart(c,prodName,depth+1);});
+  }
+  products.forEach(function(prod){
+    prod.parts.forEach(function(pt){walkPart(pt,prod.name,0);});
+  });
+  // 配列に変換してtotal降順ソート
+  return Object.keys(map).map(function(k){return map[k];}).sort(function(a,b){return b.total-a.total;});
+}
+
+function exportSupplierXL(products, overhead){
+  var summary = calcSupplierSummary(products);
+  var wb = XL.utils.book_new();
+  // サマリシート
+  var rows=[['サプライヤ別原価集計'],['出力日時',new Date().toLocaleString('ja-JP')],[],
+    ['サプライヤ名','材料費','加工費','合計','構成比']];
+  var grandTotal = summary.reduce(function(s,sup){return s+sup.total;},0);
+  summary.forEach(function(sup){
+    rows.push([sup.name, sup.mat, sup.proc, sup.total, grandTotal>0?Math.round(sup.total/grandTotal*1000)/10+'%':'0%']);
+  });
+  rows.push([],[,'合計','',grandTotal,'100%']);
+  var ws1=XL.utils.aoa_to_sheet(rows);
+  ws1['!cols']=[{wch:20},{wch:14},{wch:14},{wch:14},{wch:10}];
+  XL.utils.book_append_sheet(wb,ws1,'サプライヤ集計');
+  // 明細シート（サプライヤごと）
+  summary.forEach(function(sup){
+    var sr=[[sup.name],[],['種別','製品','部品','品目','数量','金額']];
+    sup.items.forEach(function(item){
+      sr.push([item.type==='mat'?'材料':'加工',item.prodName,item.partName,item.itemName,item.qty,item.cost]);
+    });
+    sr.push([],[,'','','合計','',sup.total]);
+    var ws=XL.utils.aoa_to_sheet(sr);
+    ws['!cols']=[{wch:6},{wch:18},{wch:20},{wch:20},{wch:8},{wch:12}];
+    XL.utils.book_append_sheet(wb,ws,sup.name.slice(0,28));
+  });
+  XL.writeFile(wb,'サプライヤ集計_'+new Date().toLocaleDateString('ja-JP').replace(/\//g,'-')+'.xlsx');
+}
+
+// ========== SupplierView ==========
+function SupplierView(props){
+  var products=props.products, overhead=props.overhead;
+  var summary = calcSupplierSummary(products);
+  var grandTotal = summary.reduce(function(s,sup){return s+sup.total;},0);
+  var es=React_useState(null); var expanded=es[0],setExpanded=es[1];
+
+  var supColors=['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ec4899','#06b6d4','#f97316','#84cc16'];
+
+  return (
+    <div>
+      {/* ヘッダー */}
+      <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginBottom:12}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:'#f1f5f9'}}>サプライヤ別原価集計</div>
+            <div style={{fontSize:10,color:'#64748b',marginTop:2}}>全製品・全部品の発注コストをサプライヤ単位で集計</div>
+          </div>
+          <button onClick={function(){exportSupplierXL(products,overhead);}}
+            style={{padding:'5px 10px',background:'#14532d',border:'1px solid #16a34a',borderRadius:7,color:'#4ade80',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>
+            📊 Excel出力
+          </button>
+        </div>
+        {/* 総額 */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
+          <div style={{background:'#0f1117',border:'1px solid #2d3748',borderRadius:7,padding:'7px 10px'}}>
+            <div style={{fontSize:10,color:'#64748b'}}>発注総額</div>
+            <div style={{fontSize:15,fontWeight:700,color:'#3b82f6',marginTop:2}}>{fmt(grandTotal)}</div>
+          </div>
+          <div style={{background:'#0f1117',border:'1px solid #2d3748',borderRadius:7,padding:'7px 10px'}}>
+            <div style={{fontSize:10,color:'#64748b'}}>材料費計</div>
+            <div style={{fontSize:15,fontWeight:700,color:'#10b981',marginTop:2}}>{fmt(summary.reduce(function(s,x){return s+x.mat;},0))}</div>
+          </div>
+          <div style={{background:'#0f1117',border:'1px solid #2d3748',borderRadius:7,padding:'7px 10px'}}>
+            <div style={{fontSize:10,color:'#64748b'}}>加工費計</div>
+            <div style={{fontSize:15,fontWeight:700,color:'#f59e0b',marginTop:2}}>{fmt(summary.reduce(function(s,x){return s+x.proc;},0))}</div>
+          </div>
+        </div>
+      </div>
+
+      {summary.length===0
+        ? <div style={{textAlign:'center',padding:'60px 20px',color:'#475569'}}><div style={{fontSize:32,marginBottom:10}}>🏭</div><div style={{fontSize:13,color:'#64748b'}}>サプライヤが登録されていません</div></div>
+        : summary.map(function(sup,idx){
+            var color=supColors[idx%supColors.length];
+            var ratio=grandTotal>0?Math.round(sup.total/grandTotal*100):0;
+            var isExp=expanded===sup.name;
+            return (
+              <div key={sup.name} style={{background:'#1a1f2e',border:'1px solid #2d3748',borderLeft:'3px solid '+color,borderRadius:10,overflow:'hidden',marginBottom:8}}>
+                {/* サプライヤヘッダー行 */}
+                <div onClick={function(){setExpanded(isExp?null:sup.name);}}
+                  style={{padding:'10px 12px',cursor:'pointer',display:'flex',alignItems:'center',gap:10}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                      <span style={{fontWeight:700,color:'#f1f5f9',fontSize:13}}>{sup.name}</span>
+                      <span style={{fontSize:10,color:color,background:color+'22',padding:'1px 6px',borderRadius:3,fontWeight:700}}>{ratio}%</span>
+                      <span style={{fontSize:10,color:'#475569'}}>{sup.items.length}品目</span>
+                    </div>
+                    {/* 構成バー */}
+                    <div style={{height:4,background:'#2d3748',borderRadius:2,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:ratio+'%',background:color,borderRadius:2,transition:'width 0.3s'}}/>
+                    </div>
+                  </div>
+                  <div style={{textAlign:'right',flexShrink:0}}>
+                    <div style={{fontSize:16,fontWeight:800,color:color}}>{fmt(sup.total)}</div>
+                    <div style={{display:'flex',gap:8,marginTop:2,justifyContent:'flex-end'}}>
+                      <span style={{fontSize:10,color:'#10b981'}}>材 {fmt(sup.mat)}</span>
+                      <span style={{fontSize:10,color:'#f59e0b'}}>加 {fmt(sup.proc)}</span>
+                    </div>
+                  </div>
+                  <span style={{fontSize:10,color:'#475569',flexShrink:0}}>{isExp?'▲':'▼'}</span>
+                </div>
+
+                {/* 明細展開 */}
+                {isExp&&(
+                  <div style={{borderTop:'1px solid #1e2533'}}>
+                    {/* 明細テーブルヘッダー */}
+                    <div style={{display:'grid',gridTemplateColumns:'40px 1fr 1fr 70px 80px',gap:4,padding:'5px 12px',background:'#0f1117',fontSize:9,color:'#475569',fontWeight:700}}>
+                      <span>種別</span><span>製品</span><span>部品 / 品目</span><span style={{textAlign:'right'}}>数量</span><span style={{textAlign:'right'}}>金額</span>
+                    </div>
+                    {sup.items.map(function(item,i){
+                      var isMat=item.type==='mat';
+                      return (
+                        <div key={i} style={{display:'grid',gridTemplateColumns:'40px 1fr 1fr 70px 80px',gap:4,padding:'5px 12px',borderBottom:'1px solid #0f1117',alignItems:'start'}}>
+                          <span style={{fontSize:9,padding:'1px 4px',borderRadius:3,background:isMat?'#064e3b':'#431407',color:isMat?'#10b981':'#f59e0b',fontWeight:700,whiteSpace:'nowrap'}}>{isMat?'材料':'加工'}</span>
+                          <span style={{fontSize:10,color:'#94a3b8',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.prodName}</span>
+                          <div style={{minWidth:0}}>
+                            <div style={{fontSize:9,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.partName}</div>
+                            <div style={{fontSize:11,color:'#e2e8f0',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.itemName}</div>
+                          </div>
+                          <span style={{fontSize:10,color:'#64748b',textAlign:'right'}}>{item.qty}</span>
+                          <span style={{fontSize:11,color:color,fontWeight:700,textAlign:'right'}}>{fmt(item.cost)}</span>
+                        </div>
+                      );
+                    })}
+                    {/* 小計 */}
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 12px',background:'#161b29'}}>
+                      <span style={{fontSize:10,color:'#64748b'}}>合計</span>
+                      <span style={{fontSize:13,fontWeight:800,color:color}}>{fmt(sup.total)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })
+      }
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
   </script>
 </body>
 </html>
