@@ -131,8 +131,8 @@ function migrate(d){
   fixThemes(d.themes);
   (d.archives||[]).forEach(function(a){fixThemes(a.themes);});
 }
-function saveData(themes,archives,currentArcId,compareNote){
-  try{localStorage.setItem(LS_KEY,JSON.stringify({themes:themes,archives:archives,currentArcId:currentArcId,compareNote:compareNote}));}catch(e){}
+function saveData(themes,archives,currentArcId,compareNotes){
+  try{localStorage.setItem(LS_KEY,JSON.stringify({themes:themes,archives:archives,currentArcId:currentArcId,compareNotes:compareNotes}));}catch(e){}
 }
 
 // サンプルデータ
@@ -342,10 +342,11 @@ function App(){
   var toastS=useState('');var toast=toastS[0],setToast=toastS[1];
   function showToast(msg){setToast(msg);setTimeout(function(){setToast('');},1500);}
   var cmpS=useState([]);var cmpIds=cmpS[0],setCmpIds=cmpS[1];
-  var cmpNoteS=useState((saved&&saved.compareNote)?saved.compareNote:'');var compareNote=cmpNoteS[0],setCompareNote=cmpNoteS[1];
+  var cmpNoteS=useState((saved&&saved.compareNotes)?saved.compareNotes:{unit:'',lot:''});var compareNotes=cmpNoteS[0],setCompareNotes=cmpNoteS[1];
+  function setNote(key,val){setCompareNotes(function(prev){var o=Object.assign({},prev);o[key]=val;return o;});}
 
   // 自動保存（themes/archives/currentArcId変更時にlocalStorageへ）
-  useEffect(function(){saveData(themes,archives,currentArcId,compareNote);},[themes,archives,currentArcId,compareNote]);
+  useEffect(function(){saveData(themes,archives,currentArcId,compareNotes);},[themes,archives,currentArcId,compareNotes]);
 
 
   var selTheme=themes.filter(function(t){return t.id===selected.themeId;})[0]||null;
@@ -647,13 +648,14 @@ function App(){
         {tab==='compare'&&(function(){
           // 全案件の全製品をフラット化
           var allProds=[];
-          themes.forEach(function(th){th.products.forEach(function(p){allProds.push({theme:th.name,prod:p});});});
+          themes.forEach(function(th){th.products.forEach(function(p){allProds.push({theme:th.name,themeId:th.id,prod:p});});});
           var selected2=allProds.filter(function(x){return cmpIds.indexOf(x.prod.id)>=0;});
           var maxTotal=0;
           selected2.forEach(function(x){var c=productCost(x.prod);if(c.total>maxTotal)maxTotal=c.total;});
           var maxUnit=0;
           selected2.forEach(function(x){var c=productCost(x.prod);if(c.unit>maxUnit)maxUnit=c.unit;});
           function toggle(pid){setCmpIds(function(prev){return prev.indexOf(pid)>=0?prev.filter(function(x){return x!==pid;}):prev.concat([pid]);});}
+          function jumpToBom(x){setSelected({themeId:x.themeId,prodId:x.prod.id});setTab('bom');}
           return (
             <div>
               {/* 製品選択 */}
@@ -680,7 +682,7 @@ function App(){
                 <div>
                   {/* 台あたり原価 棒グラフ */}
                   <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginBottom:12}}>
-                    <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:12}}>台あたり原価の比較</div>
+                    <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:12}}>台あたり原価の比較<span style={{fontSize:9,color:'#475569',fontWeight:400,marginLeft:6}}>（バーをタップで編集へ）</span></div>
                     {selected2.map(function(x){
                       var c=productCost(x.prod);
                       var matW=maxUnit>0?c.mat/maxUnit*100:0;
@@ -693,8 +695,8 @@ function App(){
                             <span style={{fontSize:11,color:'#e2e8f0',fontWeight:600}}>{x.prod.name}</span>
                             <span style={{fontSize:12,fontWeight:700,color:hasT?(c.unit>x.prod.targetCost?'#ef4444':'#10b981'):'#3b82f6'}}>{fmt(c.unit)}/台</span>
                           </div>
-                          {/* 積み上げバー */}
-                          <div style={{display:'flex',height:22,background:'#0f1117',borderRadius:4,overflow:'hidden',position:'relative'}}>
+                          {/* 積み上げバー（タップでBOM編集へ） */}
+                          <div onClick={function(){jumpToBom(x);}} title="タップでBOM編集を開く" style={{display:'flex',height:22,background:'#0f1117',borderRadius:4,overflow:'hidden',position:'relative',cursor:'pointer'}}>
                             <div style={{width:matW+'%',background:'#10b981'}} title={'材料 '+fmt(c.mat)}/>
                             <div style={{width:procW+'%',background:'#f59e0b'}} title={'加工 '+fmt(c.proc)}/>
                             <div style={{width:unitpW+'%',background:'#a855f7'}} title={'ユニット '+fmt(c.unitp)}/>
@@ -717,6 +719,10 @@ function App(){
                       <span style={{fontSize:9,color:'#a855f7'}}>■ ユニット</span>
                       <span style={{fontSize:9,color:'#ef4444'}}>｜ 目標コスト</span>
                     </div>
+                    <textarea value={compareNotes.unit||''} onChange={function(e){setNote('unit',e.target.value);}}
+                      placeholder="注釈（例：〇〇部品は含まない、為替レート120円で試算 など）"
+                      rows={2}
+                      style={{width:'100%',marginTop:8,background:'#0f1117',border:'1px solid #2d3748',borderRadius:6,color:'#cbd5e1',padding:'7px 10px',fontSize:11,lineHeight:1.5,outline:'none',resize:'vertical',fontFamily:'inherit',boxSizing:'border-box'}}/>
                   </div>
 
                   {/* ロット原価 棒グラフ */}
@@ -731,12 +737,16 @@ function App(){
                             <span style={{fontSize:11,color:'#e2e8f0'}}>{x.prod.name}<span style={{fontSize:9,color:'#475569',marginLeft:4}}>×{x.prod.quantity}台</span></span>
                             <span style={{fontSize:12,fontWeight:700,color:'#8b5cf6'}}>{fmt(c.total)}</span>
                           </div>
-                          <div style={{height:18,background:'#0f1117',borderRadius:4,overflow:'hidden'}}>
+                          <div onClick={function(){jumpToBom(x);}} title="タップでBOM編集を開く" style={{height:18,background:'#0f1117',borderRadius:4,overflow:'hidden',cursor:'pointer'}}>
                             <div style={{width:w+'%',height:'100%',background:'linear-gradient(90deg,#8b5cf6,#6366f1)',borderRadius:4}}/>
                           </div>
                         </div>
                       );
                     })}
+                    <textarea value={compareNotes.lot||''} onChange={function(e){setNote('lot',e.target.value);}}
+                      placeholder="注釈（例：初期費用・金型代は除く など）"
+                      rows={2}
+                      style={{width:'100%',marginTop:8,background:'#0f1117',border:'1px solid #2d3748',borderRadius:6,color:'#cbd5e1',padding:'7px 10px',fontSize:11,lineHeight:1.5,outline:'none',resize:'vertical',fontFamily:'inherit',boxSizing:'border-box'}}/>
                   </div>
 
                   {/* 比較表 */}
@@ -752,7 +762,7 @@ function App(){
                       </tr></thead>
                       <tbody>
                         {selected2.map(function(x){var c=productCost(x.prod);return(
-                          <tr key={x.prod.id} style={{borderBottom:'1px solid #1e2533'}}>
+                          <tr key={x.prod.id} onClick={function(){jumpToBom(x);}} style={{borderBottom:'1px solid #1e2533',cursor:'pointer'}}>
                             <td style={{padding:'4px 6px',color:'#e2e8f0'}}>{x.prod.name}</td>
                             <td style={{padding:'4px 6px',textAlign:'right',color:'#94a3b8'}}>{fmt(c.mat)}</td>
                             <td style={{padding:'4px 6px',textAlign:'right',color:'#94a3b8'}}>{fmt(c.proc)}</td>
@@ -762,16 +772,6 @@ function App(){
                         );})}
                       </tbody>
                     </table>
-                  </div>
-
-                  {/* コメント欄 */}
-                  <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginTop:12}}>
-                    <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:8}}>📝 コメント・メモ</div>
-                    <textarea value={compareNote} onChange={function(e){setCompareNote(e.target.value);}}
-                      placeholder="比較結果の所感、検討事項、次のアクションなどを記入（自動保存されます）"
-                      rows={5}
-                      style={{width:'100%',background:'#0f1117',border:'1px solid #2d3748',borderRadius:8,color:'#e2e8f0',padding:'10px 12px',fontSize:12,lineHeight:1.6,outline:'none',resize:'vertical',fontFamily:'inherit',boxSizing:'border-box'}}/>
-                    <div style={{fontSize:9,color:'#475569',marginTop:4,textAlign:'right'}}>{compareNote.length}文字・自動保存済み</div>
                   </div>
                 </div>
               )}
