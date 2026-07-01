@@ -30,7 +30,7 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script type="text/babel" data-presets="env,react">
 var useState=React.useState, useCallback=React.useCallback, useRef=React.useRef, useEffect=React.useEffect;
 var XL=window.XLSX;
@@ -151,31 +151,42 @@ function insertChildAt(parts,path){
 }
 
 // Excel出力（製品単体）
+function sheetName(name){
+  // Excelシート名の禁止文字を除去し31文字以内に
+  var s=(name||'Sheet').replace(/[\\\/\?\*\[\]:]/g,'_').slice(0,28);
+  return s||'Sheet';
+}
 function exportProductXL(prod){
-  var wb=XL.utils.book_new();
-  var c=productCost(prod);
-  var rows=[
-    [prod.name+' 原価明細'],['製造数量',prod.quantity,'台'],[prod.targetCost>0?'目標コスト/台':'','目標コスト/台',prod.targetCost||''],[],
-    ['台あたり原価',c.unit,'ロット原価',c.total],[],
-    ['階層','部品名','種別','品目名','単位','数量','サプライヤ','ロット数量','単価','金額'],
-  ];
-  function flat(part,depth){
-    var pre=Array(depth+1).join('　'),pc=partCost(part);
-    rows.push(['L'+depth,pre+part.name,'【合計】','','','','','','',pc.total]);
-    part.materials.forEach(function(m){var sup=getSelSup(m),lot=getSelLot(m),uc=getUC(m);rows.push(['',pre+'  '+m.name,'材料',m.name,m.unit,m.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(m)]);});
-    part.processes.forEach(function(p){var sup=getSelSup(p),lot=getSelLot(p),uc=getUC(p);rows.push(['',pre+'  '+p.name,'加工',p.name,'工程',p.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(p)]);});
-    (part.units||[]).forEach(function(u){var sup=getSelSup(u),lot=getSelLot(u),uc=getUC(u);rows.push(['',pre+'  '+u.name,'ユニット',u.name,u.unit||'個',u.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(u)]);});
-    part.children.forEach(function(child){flat(child,depth+1);});
+  try{
+    if(!window.XLSX){alert('Excelライブラリの読み込みに失敗しています。通信環境を確認して再読み込みしてください。');return;}
+    var XL=window.XLSX;
+    var wb=XL.utils.book_new();
+    var c=productCost(prod);
+    var rows=[
+      [prod.name+' 原価明細'],['製造数量',prod.quantity,'台'],['目標コスト/台',prod.targetCost||''],[],
+      ['台あたり原価',c.unit,'ロット原価',c.total],[],
+      ['階層','部品名','種別','品目名','単位','数量','サプライヤ','ロット数量','単価','金額'],
+    ];
+    function flat(part,depth){
+      var pre=Array(depth+1).join('　'),pc=partCost(part);
+      rows.push(['L'+depth,pre+part.name,'【合計】','','','','','','',pc.total]);
+      part.materials.forEach(function(m){var sup=getSelSup(m),lot=getSelLot(m),uc=getUC(m);rows.push(['',pre+'  '+m.name,'材料',m.name,m.unit,m.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(m)]);});
+      part.processes.forEach(function(p){var sup=getSelSup(p),lot=getSelLot(p),uc=getUC(p);rows.push(['',pre+'  '+p.name,'加工',p.name,'工程',p.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(p)]);});
+      (part.units||[]).forEach(function(u){var sup=getSelSup(u),lot=getSelLot(u),uc=getUC(u);rows.push(['',pre+'  '+u.name,'ユニット',u.name,u.unit||'個',u.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(u)]);});
+      part.children.forEach(function(child){flat(child,depth+1);});
+    }
+    prod.parts.forEach(function(pt){flat(pt,0);});
+    rows.push([],['','【製品合計】','','','','','','','材料費',c.mat],
+      ['','','','','','','','','加工費',c.proc],['','','','','','','','','ユニット購入費',c.unitp],['','','','','','','','','台あたり原価',c.unit],
+      ['','','','','','','','','ロット原価×'+prod.quantity,c.total]);
+    if(prod.targetCost>0)rows.push(['','','','','','','','','目標比',c.unit-prod.targetCost]);
+    var ws=XL.utils.aoa_to_sheet(rows);
+    ws['!cols']=[{wch:6},{wch:22},{wch:8},{wch:18},{wch:6},{wch:6},{wch:16},{wch:10},{wch:12},{wch:12}];
+    XL.utils.book_append_sheet(wb,ws,sheetName(prod.name));
+    XL.writeFile(wb,sheetName(prod.name)+'_原価.xlsx');
+  }catch(err){
+    alert('Excel出力エラー: '+(err&&err.message?err.message:err));
   }
-  prod.parts.forEach(function(pt){flat(pt,0);});
-  rows.push([],[,'【製品合計】','','','','','','','材料費',c.mat],
-    ['','','','','','','','','加工費',c.proc],['','','','','','','','','ユニット購入費',c.unitp],['','','','','','','','','台あたり原価',c.unit],
-    ['','','','','','','','','ロット原価×'+prod.quantity,c.total]);
-  if(prod.targetCost>0)rows.push(['','','','','','','','','目標比',c.unit-prod.targetCost]);
-  var ws=XL.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:6},{wch:22},{wch:8},{wch:18},{wch:6},{wch:6},{wch:16},{wch:10},{wch:12},{wch:12}];
-  XL.utils.book_append_sheet(wb,ws,prod.name.slice(0,28));
-  XL.writeFile(wb,prod.name+'_原価.xlsx');
 }
 
 // サプライヤ集計（製品内・部品ごと）
