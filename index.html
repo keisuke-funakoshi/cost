@@ -65,6 +65,38 @@ function newPart(name){return {id:uid('PT'),name:name||'新規部品',materials:
 function newProduct(name){return {id:uid('PR'),name:name||'新規製品',quantity:1,targetCost:0,parts:[]};}
 function newTheme(name){return {id:uid('TH'),name:name||'新規案件',products:[]};}
 
+// ===== ID再採番クローン =====
+function cloneRow(row,prefix){
+  var supMap={};
+  var newSups=row.suppliers.map(function(s){
+    var nsid=uid('S');supMap[s.id]=nsid;
+    var lotMap={};
+    var newLots=s.lots.map(function(l){var nlid=uid('L');lotMap[l.id]=nlid;return {id:nlid,lotQty:l.lotQty,unitCost:l.unitCost};});
+    return {id:nsid,name:s.name,lots:newLots,_lotMap:lotMap};
+  });
+  var newSelSup=supMap[row.selectedSupplierId]||(newSups[0]?newSups[0].id:null);
+  var newSelLot=null;
+  var origSupIdx=row.suppliers.map(function(s){return s.id;}).indexOf(row.selectedSupplierId);
+  if(origSupIdx>=0&&newSups[origSupIdx]){newSelLot=newSups[origSupIdx]._lotMap[row.selectedLotId]||(newSups[origSupIdx].lots[0]?newSups[origSupIdx].lots[0].id:null);}
+  else if(newSups[0]){newSelLot=newSups[0].lots[0]?newSups[0].lots[0].id:null;}
+  newSups.forEach(function(s){delete s._lotMap;});
+  var o={id:uid(prefix),name:row.name,qty:row.qty,suppliers:newSups,selectedSupplierId:newSelSup,selectedLotId:newSelLot};
+  if(row.unit!==undefined)o.unit=row.unit;
+  return o;
+}
+function clonePart(part){
+  return {
+    id:uid('PT'),name:part.name,
+    materials:(part.materials||[]).map(function(m){return cloneRow(m,'M');}),
+    processes:(part.processes||[]).map(function(p){return cloneRow(p,'P');}),
+    units:(part.units||[]).map(function(u){return cloneRow(u,'U');}),
+    children:(part.children||[]).map(function(c){return clonePart(c);}),
+  };
+}
+function cloneProduct(prod){
+  return {id:uid('PR'),name:prod.name+' (コピー)',quantity:prod.quantity,targetCost:prod.targetCost,parts:(prod.parts||[]).map(function(pt){return clonePart(pt);})};
+}
+
 function getSelSup(row){return row.suppliers.filter(function(s){return s.id===row.selectedSupplierId;})[0]||row.suppliers[0]||null;}
 function getSelLot(row){var sup=getSelSup(row);if(!sup)return null;return sup.lots.filter(function(l){return l.id===row.selectedLotId;})[0]||sup.lots[0]||null;}
 function getUC(row){var l=getSelLot(row);return l?parseFloat(l.unitCost)||0:0;}
@@ -258,6 +290,7 @@ function App(){
   var curArcS=useState((saved&&saved.currentArcId)?saved.currentArcId:null);var currentArcId=curArcS[0],setCurrentArcId=curArcS[1];
   var saveMenuS=useState(false);var showSaveMenu=saveMenuS[0],setShowSaveMenu=saveMenuS[1];
   var importRef=useRef(null);
+  var clipS=useState(null);var clipPart=clipS[0],setClipPart=clipS[1];
 
   // 自動保存（themes/archives/currentArcId変更時にlocalStorageへ）
   useEffect(function(){saveData(themes,archives,currentArcId);},[themes,archives,currentArcId]);
@@ -278,6 +311,13 @@ function App(){
 
   // ===== 製品操作 =====
   function addProduct(tid){var p=newProduct();setThemes(function(prev){return prev.map(function(t){return t.id===tid?Object.assign({},t,{products:t.products.concat([p])}):t;});});setSelected({themeId:tid,prodId:p.id});setShowSB(false);}
+  function duplicateProduct(tid,pid){
+    var th=themes.filter(function(t){return t.id===tid;})[0];if(!th)return;
+    var src=th.products.filter(function(p){return p.id===pid;})[0];if(!src)return;
+    var np=cloneProduct(src);
+    setThemes(function(prev){return prev.map(function(t){return t.id!==tid?t:Object.assign({},t,{products:t.products.concat([np])});});});
+    setSelected({themeId:tid,prodId:np.id});setShowSB(false);
+  }
   function deleteProduct(tid,pid){
     var prod=selTheme&&selTheme.products.filter(function(p){return p.id===pid;})[0];
     if(!prod)return;
@@ -299,6 +339,10 @@ function App(){
   function removePart(path){updProd(function(p){return Object.assign({},p,{parts:removePartAt(p.parts,path)});});}
   function addRoot(){updProd(function(p){return Object.assign({},p,{parts:p.parts.concat([newPart()])});});}
   function renamePart(path,name){updTree(path,function(pt){return Object.assign({},pt,{name:name});});}
+  function getPartAt(parts,path){var pt=parts[path[0]];for(var i=1;i<path.length;i++){pt=pt.children[path[i]];}return pt;}
+  function copyPart(path){if(!selProd)return;var pt=getPartAt(selProd.parts,path);if(pt)setClipPart(JSON.parse(JSON.stringify(pt)));}
+  function pastePartRoot(){if(!clipPart)return;var np=clonePart(clipPart);updProd(function(p){return Object.assign({},p,{parts:p.parts.concat([np])});});}
+  function pastePartAsChild(path){if(!clipPart)return;var np=clonePart(clipPart);updTree(path,function(pt){return Object.assign({},pt,{children:pt.children.concat([np])});});}
 
   // 材料
   function addMat(path){updTree(path,function(pt){return Object.assign({},pt,{materials:pt.materials.concat([newMat()])});});}
@@ -344,6 +388,7 @@ function App(){
 
   function mkCb(path){return {
     onRename:function(n){renamePart(path,n);},onRemove:function(){removePart(path);},onAddChild:function(){addChild(path);},
+    onCopyPart:function(){copyPart(path);},onPasteChild:function(){pastePartAsChild(path);},hasClip:!!clipPart,
     onAddMat:function(){addMat(path);},onRemoveMat:function(mid){removeMat(path,mid);},
     onSetMF:function(mid,f,v){setMF(path,mid,f,v);},onSelMSup:function(mid,sid){selMSup(path,mid,sid);},onSelMLot:function(mid,lid){selMLot(path,mid,lid);},
     onAddMSup:function(mid){addMSup(path,mid);},onUpdMSup:function(mid,sid,f,v){updMSup(path,mid,sid,f,v);},onRemoveMSup:function(mid,sid){removeMSup(path,mid,sid);},
@@ -461,6 +506,7 @@ function App(){
                             <span style={{fontSize:10,fontWeight:700,color:hasTarget?(isOver?'#ef4444':'#10b981'):'#8b5cf6'}}>{fmt(pc.unit)}/台</span>
                           </div>
                         </div>
+                        <button onClick={function(){duplicateProduct(theme.id,prod.id);}} title="この製品を複製" style={{width:20,height:20,borderRadius:4,background:'transparent',border:'1px solid #3b82f644',color:'#60a5fa',cursor:'pointer',fontSize:10,flexShrink:0,marginRight:4}}>⧉</button>
                         <button onClick={function(){deleteProduct(theme.id,prod.id);}} style={{width:20,height:20,borderRadius:4,background:'transparent',border:'1px solid #7f1d1d44',color:'#f87171',cursor:'pointer',fontSize:10,flexShrink:0,marginRight:6}}>✕</button>
                       </div>
                     );
@@ -537,7 +583,10 @@ function App(){
                   );})()||null}
                 </div>
                 {selProd.parts.map(function(pt,i){return <PartNode key={pt.id} part={pt} path={[i]} depth={0} cb={mkCb([i])} mkCb={mkCb}/>;}) }
-                <button onClick={addRoot} style={{width:'100%',padding:10,background:'#161b29',border:'1px dashed #3b82f6',borderRadius:10,color:'#60a5fa',fontWeight:700,fontSize:12,cursor:'pointer',marginTop:4}}>＋ 部品を追加</button>
+                <div style={{display:'flex',gap:6,marginTop:4}}>
+                  <button onClick={addRoot} style={{flex:1,padding:10,background:'#161b29',border:'1px dashed #3b82f6',borderRadius:10,color:'#60a5fa',fontWeight:700,fontSize:12,cursor:'pointer'}}>＋ 部品を追加</button>
+                  {clipPart&&<button onClick={pastePartRoot} style={{flex:1,padding:10,background:'#0c1520',border:'1px dashed #10b981',borderRadius:10,color:'#10b981',fontWeight:700,fontSize:12,cursor:'pointer'}}>📋 「{clipPart.name}」を貼付</button>}
+                </div>
               </div>
             )}
           </div>
@@ -690,6 +739,8 @@ function PartNode(props){
             {cost.unitp>0&&<span style={{fontSize:10,color:'#a855f7'}}>ユ {fmt(cost.unitp)}</span>}
             {cost.sub>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>子 {fmt(cost.sub)}</span>}
             <span style={{fontSize:11,color:'#e2e8f0',fontWeight:700,marginRight:'auto'}}>{fmt(cost.total)}</span>
+            <button onClick={cb.onCopyPart} title="この部品をコピー" style={{padding:'2px 6px',background:'transparent',border:'1px solid #47556955',borderRadius:4,color:'#94a3b8',fontSize:10,fontWeight:700,cursor:'pointer'}}>⧉</button>
+            {cb.hasClip&&<button onClick={cb.onPasteChild} title="コピーした部品を子として貼付" style={{padding:'2px 6px',background:'#0c1520',border:'1px solid #10b98166',borderRadius:4,color:'#10b981',fontSize:10,fontWeight:700,cursor:'pointer'}}>貼付</button>}
             <button onClick={cb.onAddChild} style={{padding:'2px 7px',background:'#1e2d4a',border:'1px solid '+dc+'66',borderRadius:4,color:dc,fontSize:10,fontWeight:700,cursor:'pointer'}}>＋子</button>
             <button onClick={function(){if(window.confirm('「'+part.name+'」を削除しますか？'))cb.onRemove();}} style={{width:20,height:20,borderRadius:4,background:'#3a1a1a',border:'1px solid #7f1d1d',color:'#f87171',cursor:'pointer',fontSize:10,flexShrink:0}}>✕</button>
           </div>
