@@ -291,6 +291,8 @@ function App(){
   var saveMenuS=useState(false);var showSaveMenu=saveMenuS[0],setShowSaveMenu=saveMenuS[1];
   var importRef=useRef(null);
   var clipS=useState(null);var clipPart=clipS[0],setClipPart=clipS[1];
+  var toastS=useState('');var toast=toastS[0],setToast=toastS[1];
+  function showToast(msg){setToast(msg);setTimeout(function(){setToast('');},1500);}
 
   // 自動保存（themes/archives/currentArcId変更時にlocalStorageへ）
   useEffect(function(){saveData(themes,archives,currentArcId);},[themes,archives,currentArcId]);
@@ -339,10 +341,9 @@ function App(){
   function removePart(path){updProd(function(p){return Object.assign({},p,{parts:removePartAt(p.parts,path)});});}
   function addRoot(){updProd(function(p){return Object.assign({},p,{parts:p.parts.concat([newPart()])});});}
   function renamePart(path,name){updTree(path,function(pt){return Object.assign({},pt,{name:name});});}
-  function getPartAt(parts,path){var pt=parts[path[0]];for(var i=1;i<path.length;i++){pt=pt.children[path[i]];}return pt;}
-  function copyPart(path){if(!selProd)return;var pt=getPartAt(selProd.parts,path);if(pt)setClipPart(JSON.parse(JSON.stringify(pt)));}
-  function pastePartRoot(){if(!clipPart)return;var np=clonePart(clipPart);updProd(function(p){return Object.assign({},p,{parts:p.parts.concat([np])});});}
-  function pastePartAsChild(path){if(!clipPart)return;var np=clonePart(clipPart);updTree(path,function(pt){return Object.assign({},pt,{children:pt.children.concat([np])});});}
+  function copyPart(part){if(part){setClipPart(JSON.parse(JSON.stringify(part)));showToast('「'+part.name+'」をコピーしました');}}
+  function pastePartRoot(){if(!clipPart)return;var np=clonePart(clipPart);updProd(function(p){return Object.assign({},p,{parts:p.parts.concat([np])});});showToast('貼り付けました');}
+  function pastePartAsChild(path){if(!clipPart)return;var np=clonePart(clipPart);updTree(path,function(pt){return Object.assign({},pt,{children:pt.children.concat([np])});});showToast('子部品として貼り付けました');}
 
   // 材料
   function addMat(path){updTree(path,function(pt){return Object.assign({},pt,{materials:pt.materials.concat([newMat()])});});}
@@ -388,7 +389,7 @@ function App(){
 
   function mkCb(path){return {
     onRename:function(n){renamePart(path,n);},onRemove:function(){removePart(path);},onAddChild:function(){addChild(path);},
-    onCopyPart:function(){copyPart(path);},onPasteChild:function(){pastePartAsChild(path);},hasClip:!!clipPart,
+    onCopyPart:function(part){copyPart(part);},onPasteChild:function(){pastePartAsChild(path);},hasClip:!!clipPart,
     onAddMat:function(){addMat(path);},onRemoveMat:function(mid){removeMat(path,mid);},
     onSetMF:function(mid,f,v){setMF(path,mid,f,v);},onSelMSup:function(mid,sid){selMSup(path,mid,sid);},onSelMLot:function(mid,lid){selMLot(path,mid,lid);},
     onAddMSup:function(mid){addMSup(path,mid);},onUpdMSup:function(mid,sid,f,v){updMSup(path,mid,sid,f,v);},onRemoveMSup:function(mid,sid){removeMSup(path,mid,sid);},
@@ -712,6 +713,13 @@ function App(){
           </div>
         </div>
       )}
+
+      {/* トースト */}
+      {toast&&(
+        <div style={{position:'fixed',bottom:20,left:'50%',transform:'translateX(-50%)',background:'#10b981',color:'#fff',padding:'8px 18px',borderRadius:20,fontSize:12,fontWeight:700,zIndex:200,boxShadow:'0 4px 16px rgba(0,0,0,0.4)',whiteSpace:'nowrap'}}>
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
@@ -739,7 +747,7 @@ function PartNode(props){
             {cost.unitp>0&&<span style={{fontSize:10,color:'#a855f7'}}>ユ {fmt(cost.unitp)}</span>}
             {cost.sub>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>子 {fmt(cost.sub)}</span>}
             <span style={{fontSize:11,color:'#e2e8f0',fontWeight:700,marginRight:'auto'}}>{fmt(cost.total)}</span>
-            <button onClick={cb.onCopyPart} title="この部品をコピー" style={{padding:'2px 6px',background:'transparent',border:'1px solid #47556955',borderRadius:4,color:'#94a3b8',fontSize:10,fontWeight:700,cursor:'pointer'}}>⧉</button>
+            <button onClick={function(){cb.onCopyPart(part);}} title="この部品をコピー" style={{padding:'2px 6px',background:'transparent',border:'1px solid #47556955',borderRadius:4,color:'#94a3b8',fontSize:10,fontWeight:700,cursor:'pointer'}}>⧉</button>
             {cb.hasClip&&<button onClick={cb.onPasteChild} title="コピーした部品を子として貼付" style={{padding:'2px 6px',background:'#0c1520',border:'1px solid #10b98166',borderRadius:4,color:'#10b981',fontSize:10,fontWeight:700,cursor:'pointer'}}>貼付</button>}
             <button onClick={cb.onAddChild} style={{padding:'2px 7px',background:'#1e2d4a',border:'1px solid '+dc+'66',borderRadius:4,color:dc,fontSize:10,fontWeight:700,cursor:'pointer'}}>＋子</button>
             <button onClick={function(){if(window.confirm('「'+part.name+'」を削除しますか？'))cb.onRemove();}} style={{width:20,height:20,borderRadius:4,background:'#3a1a1a',border:'1px solid #7f1d1d',color:'#f87171',cursor:'pointer',fontSize:10,flexShrink:0}}>✕</button>
