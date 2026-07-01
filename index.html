@@ -131,8 +131,8 @@ function migrate(d){
   fixThemes(d.themes);
   (d.archives||[]).forEach(function(a){fixThemes(a.themes);});
 }
-function saveData(themes,archives,currentArcId){
-  try{localStorage.setItem(LS_KEY,JSON.stringify({themes:themes,archives:archives,currentArcId:currentArcId}));}catch(e){}
+function saveData(themes,archives,currentArcId,compareNote){
+  try{localStorage.setItem(LS_KEY,JSON.stringify({themes:themes,archives:archives,currentArcId:currentArcId,compareNote:compareNote}));}catch(e){}
 }
 
 // サンプルデータ
@@ -193,27 +193,75 @@ function exportProductXL(prod){
     if(!window.XLSX){alert('Excelライブラリの読み込みに失敗しています。通信環境を確認して再読み込みしてください。');return;}
     var XL=window.XLSX;
     var wb=XL.utils.book_new();
-    var c=productCost(prod);
-    var rows=[
-      [prod.name+' 原価明細'],['製造数量',prod.quantity,'台'],['目標コスト/台',prod.targetCost||''],[],
-      ['台あたり原価',c.unit,'ロット原価',c.total],[],
-      ['階層','部品名','種別','品目名','単位','数量','サプライヤ','ロット数量','単価','金額'],
-    ];
+
+    // 列: A階層 B部品名 C種別 D品目名 E単位 F数量 G仕入先 Hロット数量 I単価 J金額
+    // 金額(J)=単価(I)×数量(F)、部品合計=配下明細のSUM、製品合計=部品合計行のSUM
+    var aoa=[];
+    var merges=[];
+    aoa.push([prod.name+' 原価明細']);                 // row0
+    aoa.push(['製造数量',prod.quantity,'台']);         // row1
+    aoa.push(['目標コスト/台',prod.targetCost||0]);    // row2
+    aoa.push([]);                                       // row3
+    var headerRow=aoa.length;                           // 明細ヘッダー行index
+    aoa.push(['階層','部品名','種別','品目名','単位','数量','仕入先','ロット数量','単価','金額']);
+
+    var detailRowsByPart=[]; // 各部品合計行の情報
+    // Excelは1-indexed。aoa index r → Excel行番号 r+1
+    function xlRow(idx){return idx+1;}
+    function colCell(col,idx){return col+xlRow(idx);}
+
     function flat(part,depth){
-      var pre=Array(depth+1).join('　'),pc=partCost(part);
-      rows.push(['L'+depth,pre+part.name,'【合計】','','','','','','',pc.total]);
-      part.materials.forEach(function(m){var sup=getSelSup(m),lot=getSelLot(m),uc=getUC(m);rows.push(['',pre+'  '+m.name,'材料',m.name,m.unit,m.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(m)]);});
-      part.processes.forEach(function(p){var sup=getSelSup(p),lot=getSelLot(p),uc=getUC(p);rows.push(['',pre+'  '+p.name,'加工',p.name,'工程',p.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(p)]);});
-      (part.units||[]).forEach(function(u){var sup=getSelSup(u),lot=getSelLot(u),uc=getUC(u);rows.push(['',pre+'  '+u.name,'ユニット',u.name,u.unit||'個',u.qty,sup?sup.name:'',lot?lot.lotQty:'',uc,rowCost(u)]);});
-      part.children.forEach(function(child){flat(child,depth+1);});
+      var pre=Array(depth+1).join('　');
+      // 部品合計行を先に確保（後で数式を埋める）
+      var partRowIdx=aoa.length;
+      aoa.push(['L'+depth,pre+part.name,'【部品合計】','','','','','','','']);
+      var detailIdxs=[]; // この部品直下の明細行index（子部品含まない）
+      function pushItem(typeLabel,row){
+        var idx=aoa.length;
+        var uc=getUC(row);
+        aoa.push(['',pre+'  '+row.name,typeLabel,row.name,row.unit||(typeLabel==='加工'?'工程':'個'),parseFloat(row.qty)||0,
+          (getSelSup(row)?getSelSup(row).name:''),(getSelLot(row)?getSelLot(row).lotQty:''),uc,
+          {f:colCell('I',idx)+'*'+colCell('F',idx)}]); // J=I*F
+        detailIdxs.push(idx);
+      }
+      part.materials.forEach(function(m){pushItem('材料',m);});
+      part.processes.forEach(function(p){pushItem('加工',p);});
+      (part.units||[]).forEach(function(u){pushItem('ユニット',u);});
+      // 子部品を展開（子部品合計行のindexも集める）
+      var childPartRowIdxs=[];
+      part.children.forEach(function(child){childPartRowIdxs.push(flat(child,depth+1));});
+      // 部品合計 = 直下明細のSUM + 子部品合計行のSUM
+      var terms=[];
+      if(detailIdxs.length>0){
+        terms.push('SUM('+colCell('J',detailIdxs[0])+':'+colCell('J',detailIdxs[detailIdxs.length-1])+')');
+      }
+      childPartRowIdxs.forEach(function(ci){terms.push(colCell('J',ci));});
+      aoa[partRowIdx][9]=terms.length>0?{f:terms.join('+')}:0;
+      detailRowsByPart.push(partRowIdx);
+      return partRowIdx;
     }
-    prod.parts.forEach(function(pt){flat(pt,0);});
-    rows.push([],['','【製品合計】','','','','','','','材料費',c.mat],
-      ['','','','','','','','','加工費',c.proc],['','','','','','','','','ユニット購入費',c.unitp],['','','','','','','','','台あたり原価',c.unit],
-      ['','','','','','','','','ロット原価×'+prod.quantity,c.total]);
-    if(prod.targetCost>0)rows.push(['','','','','','','','','目標比',c.unit-prod.targetCost]);
-    var ws=XL.utils.aoa_to_sheet(rows);
-    ws['!cols']=[{wch:6},{wch:22},{wch:8},{wch:18},{wch:6},{wch:6},{wch:16},{wch:10},{wch:12},{wch:12}];
+
+    // ルート部品を展開（ルート部品合計行だけ集めて製品合計に使う）
+    var rootPartRowIdxs=[];
+    prod.parts.forEach(function(pt){rootPartRowIdxs.push(flat(pt,0));});
+
+    aoa.push([]);
+    // 製品合計（台あたり）=ルート部品合計のSUM
+    var unitTotalRowIdx=aoa.length;
+    var unitFormula=rootPartRowIdxs.length>0?{f:rootPartRowIdxs.map(function(i){return colCell('J',i);}).join('+')}:0;
+    aoa.push(['','【製品合計】','','','','','','','台あたり原価',unitFormula]);
+    // ロット原価 = 台あたり × 製造数量
+    var lotRowIdx=aoa.length;
+    aoa.push(['','','','','','','','','ロット原価（×'+prod.quantity+'台）',{f:colCell('J',unitTotalRowIdx)+'*'+prod.quantity}]);
+    // 目標比
+    if(prod.targetCost>0){
+      aoa.push(['','','','','','','','','目標コスト/台',prod.targetCost]);
+      var tgtRowIdx=aoa.length-1;
+      aoa.push(['','','','','','','','','目標比/台',{f:colCell('J',unitTotalRowIdx)+'-'+colCell('J',tgtRowIdx)}]);
+    }
+
+    var ws=XL.utils.aoa_to_sheet(aoa);
+    ws['!cols']=[{wch:6},{wch:24},{wch:9},{wch:18},{wch:6},{wch:6},{wch:16},{wch:10},{wch:12},{wch:14}];
     XL.utils.book_append_sheet(wb,ws,sheetName(prod.name));
     XL.writeFile(wb,sheetName(prod.name)+'_原価.xlsx');
   }catch(err){
@@ -293,9 +341,11 @@ function App(){
   var clipS=useState(null);var clipPart=clipS[0],setClipPart=clipS[1];
   var toastS=useState('');var toast=toastS[0],setToast=toastS[1];
   function showToast(msg){setToast(msg);setTimeout(function(){setToast('');},1500);}
+  var cmpS=useState([]);var cmpIds=cmpS[0],setCmpIds=cmpS[1];
+  var cmpNoteS=useState((saved&&saved.compareNote)?saved.compareNote:'');var compareNote=cmpNoteS[0],setCompareNote=cmpNoteS[1];
 
   // 自動保存（themes/archives/currentArcId変更時にlocalStorageへ）
-  useEffect(function(){saveData(themes,archives,currentArcId);},[themes,archives,currentArcId]);
+  useEffect(function(){saveData(themes,archives,currentArcId,compareNote);},[themes,archives,currentArcId,compareNote]);
 
 
   var selTheme=themes.filter(function(t){return t.id===selected.themeId;})[0]||null;
@@ -462,7 +512,7 @@ function App(){
           </div>
         </div>
         <div style={{display:'flex',padding:'0 10px',borderTop:'1px solid #1e2533'}}>
-          {[{id:'bom',label:'BOM編集'},{id:'supplier',label:'サプライヤ集計'},{id:'archive',label:'アーカイブ('+archives.length+')'}].map(function(t){
+          {[{id:'bom',label:'BOM編集'},{id:'compare',label:'コスト比較'},{id:'supplier',label:'サプライヤ集計'},{id:'archive',label:'アーカイブ('+archives.length+')'}].map(function(t){
             return <button key={t.id} onClick={function(){setTab(t.id);}} style={{padding:'8px 14px',border:'none',background:'transparent',cursor:'pointer',color:tab===t.id?'#60a5fa':'#64748b',borderBottom:tab===t.id?'2px solid #3b82f6':'2px solid transparent',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>{t.label}</button>;
           })}
         </div>
@@ -594,6 +644,141 @@ function App(){
         )}
 
         {/* サプライヤ集計（製品内・部品ごと） */}
+        {tab==='compare'&&(function(){
+          // 全案件の全製品をフラット化
+          var allProds=[];
+          themes.forEach(function(th){th.products.forEach(function(p){allProds.push({theme:th.name,prod:p});});});
+          var selected2=allProds.filter(function(x){return cmpIds.indexOf(x.prod.id)>=0;});
+          var maxTotal=0;
+          selected2.forEach(function(x){var c=productCost(x.prod);if(c.total>maxTotal)maxTotal=c.total;});
+          var maxUnit=0;
+          selected2.forEach(function(x){var c=productCost(x.prod);if(c.unit>maxUnit)maxUnit=c.unit;});
+          function toggle(pid){setCmpIds(function(prev){return prev.indexOf(pid)>=0?prev.filter(function(x){return x!==pid;}):prev.concat([pid]);});}
+          return (
+            <div>
+              {/* 製品選択 */}
+              <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginBottom:12}}>
+                <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:8}}>比較する製品を選択</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  {allProds.map(function(x){
+                    var on=cmpIds.indexOf(x.prod.id)>=0;
+                    return <button key={x.prod.id} onClick={function(){toggle(x.prod.id);}}
+                      style={{padding:'5px 10px',borderRadius:6,border:'1px solid '+(on?'#3b82f6':'#2d3748'),background:on?'#1e2d4a':'#0f1117',color:on?'#60a5fa':'#94a3b8',fontSize:11,fontWeight:on?700:400,cursor:'pointer'}}>
+                      {on?'✓ ':''}{x.prod.name}<span style={{fontSize:9,color:'#475569',marginLeft:4}}>{x.theme}</span>
+                    </button>;
+                  })}
+                </div>
+                {allProds.length===0&&<div style={{fontSize:11,color:'#475569'}}>製品がありません</div>}
+              </div>
+
+              {selected2.length===0?(
+                <div style={{textAlign:'center',padding:'50px 20px',color:'#475569'}}>
+                  <div style={{fontSize:32,marginBottom:10}}>📊</div>
+                  <div style={{fontSize:13,color:'#64748b'}}>製品を選ぶと棒グラフで比較できます</div>
+                </div>
+              ):(
+                <div>
+                  {/* 台あたり原価 棒グラフ */}
+                  <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginBottom:12}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:12}}>台あたり原価の比較</div>
+                    {selected2.map(function(x){
+                      var c=productCost(x.prod);
+                      var matW=maxUnit>0?c.mat/maxUnit*100:0;
+                      var procW=maxUnit>0?c.proc/maxUnit*100:0;
+                      var unitpW=maxUnit>0?c.unitp/maxUnit*100:0;
+                      var hasT=x.prod.targetCost>0;
+                      return (
+                        <div key={x.prod.id} style={{marginBottom:14}}>
+                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                            <span style={{fontSize:11,color:'#e2e8f0',fontWeight:600}}>{x.prod.name}</span>
+                            <span style={{fontSize:12,fontWeight:700,color:hasT?(c.unit>x.prod.targetCost?'#ef4444':'#10b981'):'#3b82f6'}}>{fmt(c.unit)}/台</span>
+                          </div>
+                          {/* 積み上げバー */}
+                          <div style={{display:'flex',height:22,background:'#0f1117',borderRadius:4,overflow:'hidden',position:'relative'}}>
+                            <div style={{width:matW+'%',background:'#10b981'}} title={'材料 '+fmt(c.mat)}/>
+                            <div style={{width:procW+'%',background:'#f59e0b'}} title={'加工 '+fmt(c.proc)}/>
+                            <div style={{width:unitpW+'%',background:'#a855f7'}} title={'ユニット '+fmt(c.unitp)}/>
+                            {hasT&&maxUnit>0&&(
+                              <div style={{position:'absolute',left:(x.prod.targetCost/maxUnit*100)+'%',top:0,bottom:0,width:2,background:'#ef4444'}} title={'目標 '+fmt(x.prod.targetCost)}/>
+                            )}
+                          </div>
+                          <div style={{display:'flex',gap:10,marginTop:3,flexWrap:'wrap'}}>
+                            <span style={{fontSize:9,color:'#10b981'}}>材 {fmt(c.mat)}</span>
+                            <span style={{fontSize:9,color:'#f59e0b'}}>加 {fmt(c.proc)}</span>
+                            {c.unitp>0&&<span style={{fontSize:9,color:'#a855f7'}}>ユ {fmt(c.unitp)}</span>}
+                            {hasT&&<span style={{fontSize:9,color:'#ef4444'}}>目標 {fmt(x.prod.targetCost)}（{c.unit>x.prod.targetCost?'+':''}{fmt(c.unit-x.prod.targetCost)}）</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div style={{display:'flex',gap:12,marginTop:8,paddingTop:8,borderTop:'1px solid #2d3748'}}>
+                      <span style={{fontSize:9,color:'#10b981'}}>■ 材料費</span>
+                      <span style={{fontSize:9,color:'#f59e0b'}}>■ 加工費</span>
+                      <span style={{fontSize:9,color:'#a855f7'}}>■ ユニット</span>
+                      <span style={{fontSize:9,color:'#ef4444'}}>｜ 目標コスト</span>
+                    </div>
+                  </div>
+
+                  {/* ロット原価 棒グラフ */}
+                  <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginBottom:12}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:12}}>ロット原価の比較（製造数量込み）</div>
+                    {selected2.map(function(x){
+                      var c=productCost(x.prod);
+                      var w=maxTotal>0?c.total/maxTotal*100:0;
+                      return (
+                        <div key={x.prod.id} style={{marginBottom:10}}>
+                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:3}}>
+                            <span style={{fontSize:11,color:'#e2e8f0'}}>{x.prod.name}<span style={{fontSize:9,color:'#475569',marginLeft:4}}>×{x.prod.quantity}台</span></span>
+                            <span style={{fontSize:12,fontWeight:700,color:'#8b5cf6'}}>{fmt(c.total)}</span>
+                          </div>
+                          <div style={{height:18,background:'#0f1117',borderRadius:4,overflow:'hidden'}}>
+                            <div style={{width:w+'%',height:'100%',background:'linear-gradient(90deg,#8b5cf6,#6366f1)',borderRadius:4}}/>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* 比較表 */}
+                  <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,overflowX:'auto'}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:8}}>数値比較</div>
+                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                      <thead><tr style={{borderBottom:'1px solid #2d3748'}}>
+                        <th style={{textAlign:'left',padding:'4px 6px',color:'#64748b',fontWeight:600}}>製品</th>
+                        <th style={{textAlign:'right',padding:'4px 6px',color:'#10b981',fontWeight:600}}>材料</th>
+                        <th style={{textAlign:'right',padding:'4px 6px',color:'#f59e0b',fontWeight:600}}>加工</th>
+                        <th style={{textAlign:'right',padding:'4px 6px',color:'#3b82f6',fontWeight:600}}>台/原価</th>
+                        <th style={{textAlign:'right',padding:'4px 6px',color:'#8b5cf6',fontWeight:600}}>ロット</th>
+                      </tr></thead>
+                      <tbody>
+                        {selected2.map(function(x){var c=productCost(x.prod);return(
+                          <tr key={x.prod.id} style={{borderBottom:'1px solid #1e2533'}}>
+                            <td style={{padding:'4px 6px',color:'#e2e8f0'}}>{x.prod.name}</td>
+                            <td style={{padding:'4px 6px',textAlign:'right',color:'#94a3b8'}}>{fmt(c.mat)}</td>
+                            <td style={{padding:'4px 6px',textAlign:'right',color:'#94a3b8'}}>{fmt(c.proc)}</td>
+                            <td style={{padding:'4px 6px',textAlign:'right',color:'#e2e8f0',fontWeight:700}}>{fmt(c.unit)}</td>
+                            <td style={{padding:'4px 6px',textAlign:'right',color:'#8b5cf6',fontWeight:700}}>{fmt(c.total)}</td>
+                          </tr>
+                        );})}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* コメント欄 */}
+                  <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginTop:12}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:8}}>📝 コメント・メモ</div>
+                    <textarea value={compareNote} onChange={function(e){setCompareNote(e.target.value);}}
+                      placeholder="比較結果の所感、検討事項、次のアクションなどを記入（自動保存されます）"
+                      rows={5}
+                      style={{width:'100%',background:'#0f1117',border:'1px solid #2d3748',borderRadius:8,color:'#e2e8f0',padding:'10px 12px',fontSize:12,lineHeight:1.6,outline:'none',resize:'vertical',fontFamily:'inherit',boxSizing:'border-box'}}/>
+                    <div style={{fontSize:9,color:'#475569',marginTop:4,textAlign:'right'}}>{compareNote.length}文字・自動保存済み</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {tab==='supplier'&&(
           <div>
             {!selProd?(
