@@ -312,6 +312,71 @@ function importBackup(file,onSuccess){
   reader.readAsText(file);
 }
 
+// コスト比較のカラーPDF（白背景・印刷用ページ）
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function exportComparePDF(items,notes){
+  if(!items||items.length===0){alert('比較する製品を選択してください');return;}
+  var maxUnit=0,maxTotal=0;
+  items.forEach(function(x){var c=productCost(x.prod);if(c.unit>maxUnit)maxUnit=c.unit;if(c.total>maxTotal)maxTotal=c.total;});
+  var today=new Date().toLocaleDateString('ja-JP');
+  function bar(label,rightText,segments,markerPct,markerLabel){
+    var segHtml=segments.map(function(s){return '<div style="width:'+s.w+'%;background:'+s.color+';"></div>';}).join('');
+    var marker=markerPct!=null?'<div style="position:absolute;left:'+markerPct+'%;top:-2px;bottom:-2px;width:2px;background:#dc2626;"></div>':'';
+    return '<div style="margin-bottom:14px;">'+
+      '<div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">'+
+      '<span style="font-weight:600;color:#111;">'+esc(label)+'</span>'+
+      '<span style="font-weight:700;color:#111;">'+esc(rightText)+'</span></div>'+
+      '<div style="display:flex;height:22px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;overflow:hidden;position:relative;">'+segHtml+marker+'</div>'+
+      (markerLabel?'<div style="font-size:10px;color:#dc2626;margin-top:2px;">'+esc(markerLabel)+'</div>':'')+
+      '</div>';
+  }
+  var unitBars=items.map(function(x){
+    var c=productCost(x.prod);
+    var segs=[{w:maxUnit>0?c.mat/maxUnit*100:0,color:'#059669'},{w:maxUnit>0?c.proc/maxUnit*100:0,color:'#d97706'},{w:maxUnit>0?c.unitp/maxUnit*100:0,color:'#9333ea'}];
+    var hasT=x.prod.targetCost>0;
+    var mk=hasT&&maxUnit>0?x.prod.targetCost/maxUnit*100:null;
+    var mkLabel=hasT?'目標 '+fmt(x.prod.targetCost)+'（'+(c.unit>x.prod.targetCost?'超過+':'余裕-')+fmt(Math.abs(c.unit-x.prod.targetCost))+'）':'';
+    return bar(x.prod.name,fmt(c.unit)+'/台',segs,mk,mkLabel);
+  }).join('');
+  var lotBars=items.map(function(x){
+    var c=productCost(x.prod);
+    var segs=[{w:maxTotal>0?c.total/maxTotal*100:0,color:'#7c3aed'}];
+    return bar(x.prod.name+'（×'+x.prod.quantity+'台）',fmt(c.total),segs,null,'');
+  }).join('');
+  var tableRows=items.map(function(x){
+    var c=productCost(x.prod);
+    return '<tr>'+
+      '<td style="padding:6px 8px;border-bottom:1px solid #e2e8f0;">'+esc(x.prod.name)+'</td>'+
+      '<td style="padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right;color:#059669;">'+fmt(c.mat)+'</td>'+
+      '<td style="padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right;color:#d97706;">'+fmt(c.proc)+'</td>'+
+      (c.unitp>0?'<td style="padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right;color:#9333ea;">'+fmt(c.unitp)+'</td>':'<td style="padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right;color:#cbd5e1;">-</td>')+
+      '<td style="padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;">'+fmt(c.unit)+'</td>'+
+      '<td style="padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;color:#7c3aed;">'+fmt(c.total)+'</td>'+
+      '</tr>';
+  }).join('');
+  var noteBlock=function(txt){if(!txt)return '';return '<div style="margin-top:6px;font-size:11px;color:#475569;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 10px;white-space:pre-wrap;"><b style="color:#334155;">注釈：</b>'+esc(txt)+'</div>';};
+  var html='<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>コスト比較_'+today+'</title>'+
+    '<style>@page{margin:14mm;}body{font-family:sans-serif;color:#111;background:#fff;margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'+
+    'h1{font-size:18px;margin:0 0 2px;}h2{font-size:14px;margin:20px 0 10px;padding-bottom:4px;border-bottom:2px solid #e2e8f0;color:#1e293b;}'+
+    '.sub{font-size:11px;color:#64748b;margin-bottom:6px;}'+
+    'table{width:100%;border-collapse:collapse;font-size:12px;}th{text-align:right;padding:6px 8px;border-bottom:2px solid #cbd5e1;color:#475569;font-size:11px;}th:first-child{text-align:left;}'+
+    '.legend{display:flex;gap:16px;margin-top:8px;font-size:11px;}'+
+    '.print-btn{margin:14px 0;padding:8px 18px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;}'+
+    '@media print{.print-btn{display:none;}}</style></head><body style="padding:20px;">'+
+    '<button class="print-btn" onclick="window.print()">🖨 印刷 / PDF保存</button>'+
+    '<h1>コスト比較レポート</h1><div class="sub">出力日: '+today+'　対象製品: '+items.length+'件</div>'+
+    '<h2>台あたり原価の比較</h2>'+unitBars+
+    '<div class="legend"><span style="color:#059669;">■ 材料費</span><span style="color:#d97706;">■ 加工費</span><span style="color:#9333ea;">■ ユニット購入</span><span style="color:#dc2626;">｜ 目標コスト</span></div>'+
+    noteBlock(notes&&notes.unit)+
+    '<h2>ロット原価の比較（製造数量込み）</h2>'+lotBars+
+    noteBlock(notes&&notes.lot)+
+    '<h2>数値比較</h2><table><thead><tr><th>製品</th><th>材料</th><th>加工</th><th>ユニット</th><th>台あたり原価</th><th>ロット原価</th></tr></thead><tbody>'+tableRows+'</tbody></table>'+
+    '</body></html>';
+  var w=window.open('','_blank');
+  if(!w){alert('ポップアップがブロックされました。ブラウザの設定で許可してください。');return;}
+  w.document.open();w.document.write(html);w.document.close();
+}
+
 // ========== NumInput ==========
 function NumInput(props){
   var ls=useState(String(props.value));var local=ls[0],setLocal=ls[1];
@@ -660,7 +725,10 @@ function App(){
             <div>
               {/* 製品選択 */}
               <div style={{background:'#1a1f2e',border:'1px solid #2d3748',borderRadius:10,padding:12,marginBottom:12}}>
-                <div style={{fontSize:12,fontWeight:700,color:'#f1f5f9',marginBottom:8}}>比較する製品を選択</div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                  <span style={{fontSize:12,fontWeight:700,color:'#f1f5f9'}}>比較する製品を選択</span>
+                  {selected2.length>0&&<button onClick={function(){exportComparePDF(selected2,compareNotes);}} style={{padding:'5px 10px',background:'#7c2d12',border:'1px solid #ea580c',borderRadius:7,color:'#fdba74',fontWeight:700,fontSize:11,cursor:'pointer',whiteSpace:'nowrap'}}>📄 カラーPDF</button>}
+                </div>
                 <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
                   {allProds.map(function(x){
                     var on=cmpIds.indexOf(x.prod.id)>=0;
