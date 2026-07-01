@@ -407,6 +407,8 @@ function App(){
   var toastS=useState('');var toast=toastS[0],setToast=toastS[1];
   function showToast(msg){setToast(msg);setTimeout(function(){setToast('');},1500);}
   var cmpS=useState([]);var cmpIds=cmpS[0],setCmpIds=cmpS[1];
+  var collapsedS=useState({});var collapsedThemes=collapsedS[0],setCollapsedThemes=collapsedS[1];
+  function toggleTheme(tid){setCollapsedThemes(function(prev){var o=Object.assign({},prev);o[tid]=!o[tid];return o;});}
   var cmpNoteS=useState((saved&&saved.compareNotes)?saved.compareNotes:{unit:'',lot:''});var compareNotes=cmpNoteS[0],setCompareNotes=cmpNoteS[1];
   function setNote(key,val){setCompareNotes(function(prev){var o=Object.assign({},prev);o[key]=val;return o;});}
 
@@ -604,14 +606,16 @@ function App(){
                 <div key={theme.id}>
                   {/* テーマ行 */}
                   <div style={{padding:'8px 10px',background:'#161b29',borderBottom:'1px solid #1e2533',display:'flex',alignItems:'center',gap:6}}>
+                    <button onClick={function(){toggleTheme(theme.id);}} style={{width:18,height:18,borderRadius:3,background:'transparent',border:'1px solid #2d3748',color:'#94a3b8',cursor:'pointer',fontSize:9,flexShrink:0,padding:0}}>{collapsedThemes[theme.id]?'▶':'▼'}</button>
                     <span style={{fontSize:9,background:'#1d4ed8',color:'#bfdbfe',padding:'1px 5px',borderRadius:3,fontWeight:700,flexShrink:0}}>案件</span>
                     <input value={theme.name} onChange={function(e){renameTheme(theme.id,e.target.value);}}
                       style={{flex:1,minWidth:0,background:'transparent',border:'none',color:'#c7d2fe',fontSize:12,fontWeight:700,outline:'none'}}/>
+                    <span style={{fontSize:9,color:'#475569',flexShrink:0}}>{theme.products.length}件</span>
                     <button onClick={function(){addProduct(theme.id);}} style={{width:20,height:20,borderRadius:4,background:'#1d4ed855',border:'1px solid #3b82f644',color:'#60a5fa',cursor:'pointer',fontSize:13,lineHeight:'18px',flexShrink:0}}>＋</button>
                     <button onClick={function(){deleteTheme(theme.id);}} style={{width:20,height:20,borderRadius:4,background:'transparent',border:'1px solid #7f1d1d44',color:'#f87171',cursor:'pointer',fontSize:10,flexShrink:0}}>✕</button>
                   </div>
-                  {/* 製品一覧 */}
-                  {theme.products.map(function(prod){
+                  {/* 製品一覧（折りたたみ対応） */}
+                  {!collapsedThemes[theme.id]&&theme.products.map(function(prod){
                     var pc=productCost(prod),psel=prod.id===selected.prodId;
                     var hasTarget=prod.targetCost>0,isOver=hasTarget&&pc.unit>prod.targetCost;
                     return (
@@ -628,7 +632,7 @@ function App(){
                       </div>
                     );
                   })}
-                  {theme.products.length===0&&<div style={{padding:'8px 14px',fontSize:10,color:'#475569'}}>製品がありません</div>}
+                  {!collapsedThemes[theme.id]&&theme.products.length===0&&<div style={{padding:'8px 14px',fontSize:10,color:'#475569'}}>製品がありません</div>}
                 </div>
               );
             })}
